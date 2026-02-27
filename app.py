@@ -407,7 +407,8 @@ def main():
     pca_f = apply_filters(pca_df) if pca_df is not None else None
 
     with tab1:
-        st.subheader("Budget Optimizer (BSD 6–12 May)")
+        st.subheader("Budget Optimizer (March BSD)")
+        st.subheader("For Internal Use Only")
         st.caption("Uses full historical data. No date filter. Local filters: BU, Brand, Super Category.")
 
         total_budget = st.number_input("Total Budget (₹)", min_value=10000, max_value=10000000, value=100000, step=10000)
