@@ -53,45 +53,45 @@ st.markdown("""
 
 @st.cache_data
 def load_pla_data():
- """Load PLA (Performance by Listing Ads) data from Google Drive"""
- try:
- # Use Google Drive URL from secrets instead of local file
- pla_url = st.secrets.get("PLA_CSV_URL", "pla_onetim_2026-02-26.csv")
+    """Load PLA (Performance by Listing Ads) data from Google Drive"""
+    try:
+        # Use Google Drive URL from secrets instead of local file
+        pla_url = st.secrets.get("PLA_CSV_URL", "pla_onetim_2026-02-26.csv")
 
- df = pd.read_csv(pla_url)
- # Convert date column
- df['day_date'] = pd.to_datetime(df['day_date'], format='%d-%m-%Y')
- # Convert numeric columns
- numeric_cols = ['unique_views', 'clicks', 'spend', 'atc', 'total_views',
- 'listings', 'direct_units', 'indirect_units', 'direct_rev', 'indirect_rev']
- for col in numeric_cols:
- df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
- return df
- except Exception as e:
- st.error(f"Error loading PLA data from Google Drive: {e}")
- st.info("Make sure PLA_CSV_URL is configured in secrets.toml")
- return None
+        df = pd.read_csv(pla_url)
+        # Convert date column
+        df['day_date'] = pd.to_datetime(df['day_date'], format='%d-%m-%Y')
+        # Convert numeric columns
+        numeric_cols = ['unique_views', 'clicks', 'spend', 'atc', 'total_views',
+                       'listings', 'direct_units', 'indirect_units', 'direct_rev', 'indirect_rev']
+        for col in numeric_cols:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        return df
+    except Exception as e:
+        st.error(f"Error loading PLA data from Google Drive: {e}")
+        st.info("Make sure PLA_CSV_URL is configured in secrets.toml")
+        return None
 
 @st.cache_data
 def load_pca_data():
- """Load PCA (Product Creative Ads) data from Google Drive"""
- try:
- # Use Google Drive URL from secrets instead of local file
- pca_url = st.secrets.get("PCA_CSV_URL", "pca_onetim_2026-02-26.csv")
+    """Load PCA (Product Creative Ads) data from Google Drive"""
+    try:
+        # Use Google Drive URL from secrets instead of local file
+        pca_url = st.secrets.get("PCA_CSV_URL", "pca_onetim_2026-02-26.csv")
 
- df = pd.read_csv(pca_url)
- # Convert date column
- df['day_date'] = pd.to_datetime(df['day_date'], format='%d-%m-%Y')
- # Convert numeric columns
- numeric_cols = ['viewcount', 'clicks', 'adspend', 'direct_units', 'indirect_units',
- 'ppv', 'direct_rev', 'indirect_rev']
- for col in numeric_cols:
- df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
- return df
- except Exception as e:
- st.error(f"Error loading PCA data from Google Drive: {e}")
- st.info("Make sure PCA_CSV_URL is configured in secrets.toml")
- return None
+        df = pd.read_csv(pca_url)
+        # Convert date column
+        df['day_date'] = pd.to_datetime(df['day_date'], format='%d-%m-%Y')
+        # Convert numeric columns
+        numeric_cols = ['viewcount', 'clicks', 'adspend', 'direct_units', 'indirect_units',
+                       'ppv', 'direct_rev', 'indirect_rev']
+        for col in numeric_cols:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        return df
+    except Exception as e:
+        st.error(f"Error loading PCA data from Google Drive: {e}")
+        st.info("Make sure PCA_CSV_URL is configured in secrets.toml")
+        return None
 
 # --- KPI CALCULATION FUNCTIONS ---
 
