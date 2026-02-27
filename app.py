@@ -28,7 +28,7 @@ except ImportError:
     HAS_DRIVE_API = False
 
 # BSD dates: 6-12 May (Fri to Thu)
-BSD_DAYS = ['Fri 06-May', 'Sat 07-May', 'Sun 08-May', 'Mon 09-May', 'Tue 10-May', 'Wed 11-May', 'Thu 12-May']
+BSD_DAYS = ['Fri 06-Mar', 'Sat 07-Mar', 'Sun 08-Mar', 'Mon 09-Mar', 'Tue 10-Mar', 'Wed 11-Mar', 'Thu 12-Mar']
 
 # BU-Super Category phasing (7 days: Fri-Sun)
 PHASING_DATA = {
