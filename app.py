@@ -1,9 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import io
 import re
 import warnings
@@ -30,86 +27,87 @@ try:
 except ImportError:
     HAS_DRIVE_API = False
 
-# Set page configuration
-st.set_page_config(
-    page_title="Advertising Performance Analytics",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# BSD dates: 6-12 May (Fri to Thu)
+BSD_DAYS = ['Fri 06-May', 'Sat 07-May', 'Sun 08-May', 'Mon 09-May', 'Tue 10-May', 'Wed 11-May', 'Thu 12-May']
 
-# Custom CSS for better styling
+# BU-Super Category phasing (7 days: Fri-Sun)
+PHASING_DATA = {
+    ('Electronics', 'Audio'): [0.229, 0.226, 0.069, 0.173, 0.182, 0.058, 0.064],
+    ('Electronics', 'Automobile'): [0.203, 0.213, 0.068, 0.183, 0.194, 0.066, 0.073],
+    ('Electronics', 'Camera'): [0.223, 0.219, 0.071, 0.180, 0.182, 0.059, 0.066],
+    ('Electronics', 'DigitalVoucherCode'): [0.233, 0.225, 0.072, 0.174, 0.181, 0.054, 0.061],
+    ('Electronics', 'Electronics'): [0.225, 0.218, 0.069, 0.177, 0.185, 0.059, 0.066],
+    ('Electronics', 'ExtendedWarrantyNew'): [0.220, 0.217, 0.069, 0.182, 0.186, 0.059, 0.066],
+    ('Electronics', 'Gaming'): [0.250, 0.244, 0.077, 0.156, 0.160, 0.053, 0.059],
+    ('Electronics', 'IOT'): [0.223, 0.221, 0.072, 0.178, 0.185, 0.058, 0.064],
+    ('Electronics', 'ITAccessory'): [0.211, 0.217, 0.069, 0.180, 0.194, 0.061, 0.068],
+    ('Electronics', 'ITPeripherals'): [0.202, 0.205, 0.068, 0.191, 0.201, 0.063, 0.070],
+    ('Electronics', 'LaptopAndDesktop'): [0.250, 0.235, 0.079, 0.166, 0.160, 0.052, 0.058],
+    ('Electronics', 'MobileProtection'): [0.243, 0.240, 0.073, 0.161, 0.169, 0.054, 0.060],
+    ('Electronics', 'PersonalHealthCare'): [0.225, 0.219, 0.070, 0.175, 0.183, 0.060, 0.067],
+    ('Electronics', 'PowerBank'): [0.278, 0.214, 0.063, 0.149, 0.165, 0.062, 0.069],
+    ('Electronics', 'RestOfMobileAccessory'): [0.272, 0.234, 0.065, 0.149, 0.164, 0.055, 0.061],
+    ('Electronics', 'SHA'): [0.225, 0.224, 0.072, 0.176, 0.183, 0.057, 0.064],
+    ('Electronics', 'Service'): [0.215, 0.215, 0.068, 0.179, 0.187, 0.064, 0.072],
+    ('Electronics', 'Storage'): [0.222, 0.208, 0.065, 0.180, 0.189, 0.065, 0.072],
+    ('Electronics', 'Tablet'): [0.226, 0.209, 0.070, 0.181, 0.187, 0.061, 0.068],
+    ('Electronics', 'Video'): [0.212, 0.224, 0.073, 0.179, 0.184, 0.061, 0.068],
+    ('LargeAppliances', 'AirConditioner'): [0.222, 0.256, 0.041, 0.201, 0.206, 0.033, 0.041],
+    ('LargeAppliances', 'AppliancePasses'): [0.244, 0.259, 0.046, 0.188, 0.189, 0.030, 0.043],
+    ('LargeAppliances', 'AppliancesService'): [0.254, 0.254, 0.047, 0.194, 0.186, 0.027, 0.038],
+    ('LargeAppliances', 'CoreEA'): [0.236, 0.256, 0.051, 0.202, 0.184, 0.029, 0.042],
+    ('LargeAppliances', 'HomeEntertainmentLarge'): [0.254, 0.244, 0.044, 0.197, 0.202, 0.026, 0.033],
+    ('LargeAppliances', 'LargeAppliances'): [0.221, 0.247, 0.044, 0.206, 0.208, 0.033, 0.041],
+    ('LargeAppliances', 'Microwave'): [0.207, 0.404, 0.038, 0.154, 0.149, 0.021, 0.026],
+    ('LargeAppliances', 'PremiumEA'): [0.254, 0.283, 0.048, 0.180, 0.173, 0.025, 0.036],
+    ('LargeAppliances', 'Refrigerator'): [0.248, 0.233, 0.041, 0.191, 0.212, 0.034, 0.042],
+    ('LargeAppliances', 'SeasonalEA'): [0.209, 0.250, 0.044, 0.201, 0.205, 0.038, 0.054],
+    ('LargeAppliances', 'WashingMachineDryer'): [0.215, 0.254, 0.043, 0.188, 0.223, 0.034, 0.042],
+}
+
+# Base curves for fallback when (BU, SuperCat) not in PHASING_DATA
+ELEC_BASE = [0.22, 0.22, 0.07, 0.18, 0.19, 0.06, 0.06]
+APP_BASE = [0.23, 0.25, 0.045, 0.20, 0.20, 0.035, 0.04]
+
+URGENCY_CATEGORIES = ['Gaming', 'LaptopAndDesktop', 'RestOfMobileAccessory', 'PowerBank', 'MobileProtection']
+DELIBERATION_CATEGORIES = ['AirConditioner', 'Refrigerator', 'HomeEntertainmentLarge', 'WashingMachineDryer', 'LargeAppliances']
+URGENCY_MULT = [1.15, 1.10, 1.05, 0.85, 0.85, 0.90, 0.90]
+DELIB_MULT = [0.90, 0.95, 1.00, 1.15, 1.20, 1.05, 1.05]
+
+st.set_page_config(page_title="BSD Budget Optimizer", page_icon="💰", layout="wide", initial_sidebar_state="expanded")
+
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 2.5rem;
-        font-weight: bold;
-        color: #1f77b4;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .metric-card {
-        background-color: #f0f2f6;
-        padding: 1rem;
-        border-radius: 10px;
-        border-left: 5px solid #1f77b4;
-        margin: 0.5rem 0;
-    }
-    .recommendation-box {
-        background-color: #e8f4f8;
-        padding: 1rem;
-        border-radius: 10px;
-        border-left: 5px solid #17becf;
-        margin: 0.5rem 0;
-    }
-    .warning-box {
-        background-color: #fff3cd;
-        padding: 1rem;
-        border-radius: 10px;
-        border-left: 5px solid #ffc107;
-        margin: 0.5rem 0;
-    }
+.main-header { font-size: 2rem; font-weight: bold; color: #1f77b4; text-align: center; margin-bottom: 1.5rem; }
+.metric-card { background-color: #f0f2f6; padding: 0.8rem; border-radius: 8px; border-left: 4px solid #1f77b4; margin: 0.4rem 0; }
+.recommendation-box { background-color: #e8f4f8; padding: 0.8rem; border-radius: 8px; border-left: 4px solid #17becf; margin: 0.4rem 0; }
+.warning-box { background-color: #fff3cd; padding: 0.8rem; border-radius: 8px; border-left: 4px solid #ffc107; margin: 0.4rem 0; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- DATA LOADING FUNCTIONS ---
-
+# --- DATA LOADING ---
 def _load_from_drive_api_by_name(folder_id, name_patterns):
-    """
-    Use Google Drive API to list files in folder, find by name pattern, and download.
-    No file IDs needed - Python finds files by name.
-    Requires: GOOGLE_DRIVE_FOLDER_ID + GCP_CREDENTIALS_JSON in secrets.
-    """
     if not HAS_DRIVE_API:
         return None
     try:
         creds_json = None
         if hasattr(st, 'secrets') and st.secrets:
             creds_json = st.secrets.get("GCP_CREDENTIALS_JSON")
-            if isinstance(creds_json, dict):
-                creds_json = creds_json
-            elif isinstance(creds_json, str):
+            if isinstance(creds_json, str):
                 import json
                 creds_json = json.loads(creds_json)
         if not creds_json:
             return None
         creds = service_account.Credentials.from_service_account_info(
-            creds_json, scopes=['https://www.googleapis.com/auth/drive.readonly']
-        )
+            creds_json, scopes=['https://www.googleapis.com/auth/drive.readonly'])
         service = build('drive', 'v3', credentials=creds)
-        query = f"'{folder_id}' in parents and trashed = false"
-        results = service.files().list(q=query, fields="files(id, name)").execute()
-        files = results.get('files', [])
-        for f in files:
-            name_lower = f['name'].lower()
-            if name_lower.endswith('.csv') and all(p in name_lower for p in name_patterns):
-                file_id = f['id']
-                request = service.files().get_media(fileId=file_id)
+        results = service.files().list(q=f"'{folder_id}' in parents and trashed = false", fields="files(id, name)").execute()
+        for f in results.get('files', []):
+            if f['name'].lower().endswith('.csv') and all(p in f['name'].lower() for p in name_patterns):
                 buf = io.BytesIO()
-                downloader = MediaIoBaseDownload(buf, request)
-                done = False
-                while not done:
-                    _, done = downloader.next_chunk()
+                downloader = MediaIoBaseDownload(buf, service.files().get_media(fileId=f['id']))
+                while not downloader.next_chunk()[1]:
+                    pass
                 buf.seek(0)
                 return pd.read_csv(buf)
     except Exception:
@@ -117,30 +115,22 @@ def _load_from_drive_api_by_name(folder_id, name_patterns):
     return None
 
 def _download_from_google_drive(url_or_id):
-    """Download file from Google Drive URL and return bytes. Handles both full URL and file ID."""
     if not url_or_id or not isinstance(url_or_id, str):
         return None
     url_or_id = url_or_id.strip()
-    file_id = None
-    if url_or_id.startswith("http"):
-        match = re.search(r'[?&]id=([a-zA-Z0-9_-]+)', url_or_id)
-        if match:
-            file_id = match.group(1)
-        else:
-            match = re.search(r'/d/([a-zA-Z0-9_-]+)', url_or_id)
-            if match:
-                file_id = match.group(1)
+    m = re.search(r'[?&]id=([a-zA-Z0-9_-]+)', url_or_id)
+    if m:
+        file_id = m.group(1)
     else:
-        file_id = url_or_id
+        m2 = re.search(r'/d/([a-zA-Z0-9_-]+)', url_or_id)
+        file_id = m2.group(1) if m2 else (url_or_id if not url_or_id.startswith('http') else None)
     if not file_id:
         return None
-    url = f"https://drive.google.com/uc?id={file_id}"
     if HAS_GDOWN:
         try:
-            import tempfile
-            import os
+            import tempfile, os
             with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as tmp:
-                gdown.download(url, tmp.name, quiet=True, fuzzy=True)
+                gdown.download(f"https://drive.google.com/uc?id={file_id}", tmp.name, quiet=True, fuzzy=True)
                 with open(tmp.name, 'rb') as f:
                     data = f.read()
                 os.unlink(tmp.name)
@@ -149,39 +139,18 @@ def _download_from_google_drive(url_or_id):
             pass
     if HAS_REQUESTS:
         try:
-            dl_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-            session = requests.Session()
-            resp = session.get(dl_url, stream=True)
-            for key, val in resp.cookies.items():
-                if 'download_warning' in key.lower():
-                    resp = session.get(dl_url, params={'confirm': val}, stream=True)
+            r = requests.get(f"https://drive.google.com/uc?export=download&id={file_id}", stream=True)
+            for k, v in r.cookies.items():
+                if 'download_warning' in k.lower():
+                    r = requests.get(f"https://drive.google.com/uc?export=download&id={file_id}", params={'confirm': v}, stream=True)
                     break
-            resp.raise_for_status()
-            return resp.content
+            r.raise_for_status()
+            return r.content
         except Exception:
             pass
     return None
 
-def _load_csv_from_drive_folder(folder_id, name_pattern):
-    """Load CSV from Drive folder by name pattern (e.g. ['pla','onetim'])."""
-    if not HAS_GDOWN:
-        return None
-    try:
-        import tempfile
-        import os
-        with tempfile.TemporaryDirectory() as tmpdir:
-            url = f"https://drive.google.com/drive/folders/{folder_id}"
-            gdown.download_folder(url, output=tmpdir, quiet=True, use_cookies=False)
-            for root, _, files in os.walk(tmpdir):
-                for f in files:
-                    if f.lower().endswith('.csv') and all(p in f.lower() for p in name_pattern):
-                        return pd.read_csv(os.path.join(root, f))
-    except Exception:
-        pass
-    return None
-
 def _process_pla_df(df):
-    """Process PLA dataframe - date and numeric columns."""
     if 'day_date' in df.columns:
         df['day_date'] = pd.to_datetime(df['day_date'], format='%d-%m-%Y', errors='coerce')
     for col in ['unique_views', 'clicks', 'spend', 'atc', 'total_views', 'listings', 'direct_units', 'indirect_units', 'direct_rev', 'indirect_rev']:
@@ -190,7 +159,6 @@ def _process_pla_df(df):
     return df
 
 def _process_pca_df(df):
-    """Process PCA dataframe - date and numeric columns."""
     if 'day_date' in df.columns:
         df['day_date'] = pd.to_datetime(df['day_date'], format='%d-%m-%Y', errors='coerce')
     for col in ['viewcount', 'clicks', 'adspend', 'direct_units', 'indirect_units', 'ppv', 'direct_rev', 'indirect_rev']:
@@ -200,565 +168,332 @@ def _process_pca_df(df):
 
 @st.cache_data
 def load_pla_data():
-    """Load PLA (Performance by Listing Ads) data from Google Drive"""
-    try:
-        folder_id = None
-        pla_url = None
-        if hasattr(st, 'secrets') and st.secrets:
-            folder_id = st.secrets.get("GOOGLE_DRIVE_FOLDER_ID")
-            if not folder_id and st.secrets.get("GOOGLE_DRIVE_FOLDER_URL"):
-                m = re.search(r'/folders/([a-zA-Z0-9_-]+)', str(st.secrets.get("GOOGLE_DRIVE_FOLDER_URL", "")))
-                if m:
-                    folder_id = m.group(1)
-            pla_url = st.secrets.get("PLA_CSV_URL") or st.secrets.get("PLA_FILE_ID")
-        # Method 1: Drive API - finds files by name, no file IDs needed
-        if folder_id:
-            df = _load_from_drive_api_by_name(folder_id, ['pla', 'onetim'])
-            if df is not None:
-                return _process_pla_df(df)
-        # Method 2: Direct file URL (fallback)
-        if pla_url:
-            data = _download_from_google_drive(pla_url)
-            if data is not None:
-                return _process_pla_df(pd.read_csv(io.BytesIO(data)))
-            if HAS_REQUESTS and str(pla_url).startswith("http"):
-                r = requests.get(pla_url)
-                r.raise_for_status()
-                return _process_pla_df(pd.read_csv(io.BytesIO(r.content)))
-        st.error("Google Drive not configured. Add to Streamlit Cloud: App → Settings → Secrets")
-        st.info("**No file IDs needed.** Add: 1) GOOGLE_DRIVE_FOLDER_ID  2) GCP_CREDENTIALS_JSON (paste your akshay_kumar_ads.json). Share the Drive folder with the service account email from the JSON.")
-        return None
-    except Exception as e:
-        st.error(f"Error loading PLA data: {e}")
-        return None
+    folder_id = st.secrets.get("GOOGLE_DRIVE_FOLDER_ID") if hasattr(st, 'secrets') and st.secrets else None
+    if not folder_id and hasattr(st, 'secrets') and st.secrets.get("GOOGLE_DRIVE_FOLDER_URL"):
+        m = re.search(r'/folders/([a-zA-Z0-9_-]+)', str(st.secrets.get("GOOGLE_DRIVE_FOLDER_URL", "")))
+        folder_id = m.group(1) if m else None
+    if folder_id:
+        df = _load_from_drive_api_by_name(folder_id, ['pla', 'onetim'])
+        if df is not None:
+            return _process_pla_df(df)
+    pla_url = st.secrets.get("PLA_CSV_URL") or st.secrets.get("PLA_FILE_ID") if hasattr(st, 'secrets') and st.secrets else None
+    if pla_url:
+        data = _download_from_google_drive(pla_url)
+        if data:
+            return _process_pla_df(pd.read_csv(io.BytesIO(data)))
+    st.error("Google Drive not configured. Add GOOGLE_DRIVE_FOLDER_ID and GCP_CREDENTIALS_JSON to Streamlit Secrets.")
+    return None
 
 @st.cache_data
 def load_pca_data():
-    """Load PCA (Product Creative Ads) data from Google Drive"""
-    try:
-        folder_id = None
-        pca_url = None
-        if hasattr(st, 'secrets') and st.secrets:
-            folder_id = st.secrets.get("GOOGLE_DRIVE_FOLDER_ID")
-            if not folder_id and st.secrets.get("GOOGLE_DRIVE_FOLDER_URL"):
-                m = re.search(r'/folders/([a-zA-Z0-9_-]+)', str(st.secrets.get("GOOGLE_DRIVE_FOLDER_URL", "")))
-                if m:
-                    folder_id = m.group(1)
-            pca_url = st.secrets.get("PCA_CSV_URL") or st.secrets.get("PCA_FILE_ID")
-        # Method 1: Drive API - finds files by name, no file IDs needed
-        if folder_id:
-            df = _load_from_drive_api_by_name(folder_id, ['pca', 'onetim'])
-            if df is not None:
-                return _process_pca_df(df)
-        # Method 2: Direct file URL (fallback)
-        if pca_url:
-            data = _download_from_google_drive(pca_url)
-            if data is not None:
-                return _process_pca_df(pd.read_csv(io.BytesIO(data)))
-            if HAS_REQUESTS and str(pca_url).startswith("http"):
-                r = requests.get(pca_url)
-                r.raise_for_status()
-                return _process_pca_df(pd.read_csv(io.BytesIO(r.content)))
-        st.error("Google Drive not configured. Add to Streamlit Cloud: App → Settings → Secrets")
-        st.info("**No file IDs needed.** Add: 1) GOOGLE_DRIVE_FOLDER_ID  2) GCP_CREDENTIALS_JSON (paste your akshay_kumar_ads.json). Share the Drive folder with the service account email from the JSON.")
-        return None
-    except Exception as e:
-        st.error(f"Error loading PCA data: {e}")
-        return None
+    folder_id = st.secrets.get("GOOGLE_DRIVE_FOLDER_ID") if hasattr(st, 'secrets') and st.secrets else None
+    if not folder_id and hasattr(st, 'secrets') and st.secrets.get("GOOGLE_DRIVE_FOLDER_URL"):
+        m = re.search(r'/folders/([a-zA-Z0-9_-]+)', str(st.secrets.get("GOOGLE_DRIVE_FOLDER_URL", "")))
+        folder_id = m.group(1) if m else None
+    if folder_id:
+        df = _load_from_drive_api_by_name(folder_id, ['pca', 'onetim'])
+        if df is not None:
+            return _process_pca_df(df)
+    pca_url = st.secrets.get("PCA_CSV_URL") or st.secrets.get("PCA_FILE_ID") if hasattr(st, 'secrets') and st.secrets else None
+    if pca_url:
+        data = _download_from_google_drive(pca_url)
+        if data:
+            return _process_pca_df(pd.read_csv(io.BytesIO(data)))
+    st.error("Google Drive not configured.")
+    return None
 
-# --- KPI CALCULATION FUNCTIONS ---
-
+# --- KPI CALCULATIONS ---
 def calculate_pla_kpis(df):
-    """Calculate KPIs for PLA data"""
     df = df.copy()
-    # Avoid division by zero
     df['CTR'] = np.where(df['total_views'] > 0, df['clicks'] / df['total_views'], 0)
     df['Direct_CVR'] = np.where(df['spend'] > 0, df['direct_units'] / df['spend'], 0)
     df['Indirect_CVR'] = np.where(df['spend'] > 0, df['indirect_units'] / df['spend'], 0)
     df['Direct_ROI'] = np.where(df['spend'] > 0, df['direct_rev'] / df['spend'], 0)
     df['Indirect_ROI'] = np.where(df['spend'] > 0, df['indirect_rev'] / df['spend'], 0)
-    df['Total_ROI'] = df['Direct_ROI'] + df['Indirect_ROI']
+    df['Total_ROI'] = np.where(df['spend'] > 0, (df['direct_rev'] + df['indirect_rev']) / df['spend'], 0)
     df['Total_Revenue'] = df['direct_rev'] + df['indirect_rev']
     df['Total_Units'] = df['direct_units'] + df['indirect_units']
-    df['ROAS'] = np.where(df['spend'] > 0, df['Total_Revenue'] / df['spend'], 0)
     return df
 
 def calculate_pca_kpis(df):
-    """Calculate KPIs for PCA data"""
     df = df.copy()
-    # Avoid division by zero
     df['CTR'] = np.where(df['viewcount'] > 0, df['clicks'] / df['viewcount'], 0)
     df['Direct_CVR'] = np.where(df['adspend'] > 0, df['direct_units'] / df['adspend'], 0)
     df['Indirect_CVR'] = np.where(df['adspend'] > 0, df['indirect_units'] / df['adspend'], 0)
     df['Direct_ROI'] = np.where(df['adspend'] > 0, df['direct_rev'] / df['adspend'], 0)
     df['Indirect_ROI'] = np.where(df['adspend'] > 0, df['indirect_rev'] / df['adspend'], 0)
-    df['Total_ROI'] = df['Direct_ROI'] + df['Indirect_ROI']
+    df['Total_ROI'] = np.where(df['adspend'] > 0, (df['direct_rev'] + df['indirect_rev']) / df['adspend'], 0)
     df['Total_Revenue'] = df['direct_rev'] + df['indirect_rev']
     df['Total_Units'] = df['direct_units'] + df['indirect_units']
-    df['ROAS'] = np.where(df['adspend'] > 0, df['Total_Revenue'] / df['adspend'], 0)
     return df
 
-# --- BUDGET OPTIMIZATION FUNCTIONS ---
-
-def optimize_budget_historical(df, total_budget, data_type='pla', kpi_col='Total_ROI'):
-    """
-    Optimize budget allocation based on historical performance.
-    Uses selected KPI for efficiency scoring.
-    Returns recommended budget allocation by brand/supercategory
-    """
-    if data_type == 'pla':
-        spend_col = 'spend'
-        group_cols = ['brand', 'analytic_super_category']
+# --- TRAFFIC PHASING ---
+def get_phasing_for_bu_sc(business_unit, super_category):
+    key = (str(business_unit).strip(), str(super_category).strip())
+    if key in PHASING_DATA:
+        return PHASING_DATA[key]
+    base = ELEC_BASE if 'Electronics' in str(business_unit) else APP_BASE
+    if super_category in URGENCY_CATEGORIES:
+        mult = URGENCY_MULT
+    elif super_category in DELIBERATION_CATEGORIES:
+        mult = DELIB_MULT
     else:
-        spend_col = 'adspend'
-        group_cols = ['brand', 'super_category']
+        mult = [1.0] * 7
+    adjusted = [base[i] * mult[i] for i in range(7)]
+    adjusted[6] = adjusted[5] * 0.85
+    total = sum(adjusted)
+    return [a / total for a in adjusted]
 
-    # Ensure KPI column exists
+def calculate_traffic_phasing(base_volume, category_name, business_unit, base_curve_percentages=None):
+    pct = get_phasing_for_bu_sc(business_unit, category_name)
+    return pct, [base_volume * x for x in pct]
+
+# --- BUDGET OPTIMIZATION ---
+def optimize_budget(df, total_budget, data_type, kpi_col, group_cols_extra=None):
+    spend_col = 'spend' if data_type == 'pla' else 'adspend'
+    group_cols = ['brand', 'analytic_super_category'] if data_type == 'pla' else ['brand', 'super_category']
+    if group_cols_extra:
+        group_cols = group_cols + [c for c in group_cols_extra if c in df.columns]
     if kpi_col not in df.columns:
         kpi_col = 'Total_ROI'
+    agg_d = {spend_col: 'sum', 'Total_Revenue': 'sum', 'Total_Units': 'sum', kpi_col: 'mean'}
+    perf = df.groupby(group_cols).agg(agg_d).reset_index()
+    perf['Efficiency_Score'] = perf[kpi_col] * np.log1p(perf[spend_col])
+    perf['Efficiency_Score'] = perf['Efficiency_Score'].fillna(0)
+    if perf['Efficiency_Score'].max() > 0:
+        perf['Efficiency_Score'] = perf['Efficiency_Score'] / perf['Efficiency_Score'].max()
+    tot_eff = perf['Efficiency_Score'].sum()
+    perf['Recommended_Budget'] = (perf['Efficiency_Score'] / tot_eff * total_budget) if tot_eff > 0 else (total_budget / len(perf))
+    # ROI = Revenue / Spend. Expected revenue at historical efficiency.
+    perf['Expected_Revenue'] = np.where(perf[spend_col] > 0, perf['Total_Revenue'] / perf[spend_col] * perf['Recommended_Budget'], 0)
+    perf['Expected_ROI'] = np.where(perf['Recommended_Budget'] > 0, perf['Expected_Revenue'] / perf['Recommended_Budget'], 0)
+    return perf.sort_values('Efficiency_Score', ascending=False)
 
-    # Aggregate performance by groups
-    agg_dict = {spend_col: 'sum', 'Total_Revenue': 'sum', 'Total_Units': 'sum'}
-    if kpi_col in df.columns:
-        agg_dict[kpi_col] = 'mean'
-    perf_df = df.groupby(group_cols).agg(agg_dict).reset_index()
-
-    # Calculate efficiency score (selected KPI * historical spend weight)
-    perf_df['Efficiency_Score'] = perf_df[kpi_col] * np.log1p(perf_df[spend_col])
-    perf_df['Efficiency_Score'] = perf_df['Efficiency_Score'].fillna(0)
-
-    # Normalize efficiency scores
-    if perf_df['Efficiency_Score'].max() > 0:
-        perf_df['Efficiency_Score'] = perf_df['Efficiency_Score'] / perf_df['Efficiency_Score'].max()
-
-    # Allocate budget proportionally to efficiency scores
-    total_efficiency = perf_df['Efficiency_Score'].sum()
-    if total_efficiency > 0:
-        perf_df['Recommended_Budget'] = (perf_df['Efficiency_Score'] / total_efficiency) * total_budget
-    else:
-        # Equal allocation if no efficiency data
-        perf_df['Recommended_Budget'] = total_budget / len(perf_df)
-
-    # Calculate expected outcomes
-    perf_df['Expected_ROI'] = perf_df[kpi_col] * perf_df['Recommended_Budget']
-    perf_df['Expected_Revenue'] = perf_df['Expected_ROI']
-
-    return perf_df.sort_values('Efficiency_Score', ascending=False)
-
-def generate_recommendations(df, data_type='pla'):
-    """Generate actionable recommendations based on performance data"""
-    recommendations = []
-
-    if data_type == 'pla':
-        spend_col = 'spend'
-        roi_col = 'Total_ROI'
-        ctr_col = 'CTR'
-        group_cols = ['brand', 'analytic_super_category']
-    else:
-        spend_col = 'adspend'
-        roi_col = 'Total_ROI'
-        ctr_col = 'CTR'
-        group_cols = ['brand', 'super_category']
-
-    # Top performers
-    top_performers = df.groupby(group_cols)[roi_col].mean().nlargest(3)
-    if not top_performers.empty:
-        recommendations.append({
-            'type': 'success',
-            'title': '🚀 Top Performing Categories',
-            'message': f"Increase budget for: {', '.join([f'{k[0]} ({k[1]})' for k in top_performers.index])}"
-        })
-
-    # Underperformers
-    low_performers = df.groupby(group_cols)[roi_col].mean().nsmallest(3)
-    if not low_performers.empty:
-        recommendations.append({
-            'type': 'warning',
-            'title': '⚠️ Underperforming Categories',
-            'message': f"Review/reduce budget for: {', '.join([f'{k[0]} ({k[1]})' for k in low_performers.index])}"
-        })
-
-    # High spend, low ROI
-    high_spend_low_roi = df[df[spend_col] > df[spend_col].quantile(0.75)]
-    high_spend_low_roi = high_spend_low_roi[high_spend_low_roi[roi_col] < df[roi_col].quantile(0.25)]
-    if not high_spend_low_roi.empty:
-        brands = high_spend_low_roi[group_cols[0]].unique()[:3]
-        recommendations.append({
-            'type': 'warning',
-            'title': '💰 High Spend, Low ROI Alert',
-            'message': f"Optimize campaigns for: {', '.join(brands)}"
-        })
-
-    # High CTR opportunities
-    high_ctr = df[df[ctr_col] > df[ctr_col].quantile(0.75)]
-    if not high_ctr.empty:
-        brands = high_ctr[group_cols[0]].unique()[:3]
-        recommendations.append({
-            'type': 'info',
-            'title': '🎯 High CTR Opportunities',
-            'message': f"Scale campaigns for: {', '.join(brands)}"
-        })
-
-    return recommendations
-
-# --- VISUALIZATION FUNCTIONS ---
-
-def create_kpi_summary(df, title, data_type='pla'):
-    """Create KPI summary cards"""
-    if data_type == 'pla':
-        spend_col = 'spend'
-        revenue_col = 'Total_Revenue'
-        roi_col = 'Total_ROI'
-    else:
-        spend_col = 'adspend'
-        revenue_col = 'Total_Revenue'
-        roi_col = 'Total_ROI'
-
-    total_spend = df[spend_col].sum()
-    total_revenue = df[revenue_col].sum()
-    avg_roi = df[roi_col].mean()
-    total_units = df['Total_Units'].sum()
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.metric("Total Spend", f"₹{total_spend:,.2f}")
-
-    with col2:
-        st.metric("Total Revenue", f"₹{total_revenue:,.2f}")
-
-    with col3:
-        st.metric("Average ROI", f"{avg_roi:.2f}")
-
-    with col4:
-        st.metric("Total Units", f"{total_units:,.0f}")
-
-def create_performance_chart(df, group_by, metric, data_type='pla'):
-    """Create performance visualization"""
-    if data_type == 'pla':
-        spend_col = 'spend'
-    else:
-        spend_col = 'adspend'
-
-    if group_by == 'brand':
-        group_col = 'brand'
-    elif group_by == 'supercategory':
-        group_col = 'analytic_super_category' if data_type == 'pla' else 'super_category'
-    else:
-        group_col = group_by
-
-    # Aggregate data
-    agg_df = df.groupby(group_col).agg({
-        spend_col: 'sum',
-        metric: 'mean'
-    }).reset_index().sort_values(spend_col, ascending=False).head(10)
-
-    fig = px.bar(agg_df, x=group_col, y=metric,
-                 title=f'{metric} by {group_by.title()} (Top 10 by Spend)',
-                 color=spend_col, color_continuous_scale='Blues')
-
-    fig.update_layout(xaxis_tickangle=-45)
-    st.plotly_chart(fig, use_container_width=True)
-
-def create_roi_vs_spend_scatter(df, data_type='pla'):
-    """Create ROI vs Spend scatter plot"""
-    if data_type == 'pla':
-        spend_col = 'spend'
-        roi_col = 'Total_ROI'
-        group_cols = ['brand', 'analytic_super_category']
-    else:
-        spend_col = 'adspend'
-        roi_col = 'Total_ROI'
-        group_cols = ['brand', 'super_category']
-
-    # Aggregate by groups
-    agg_df = df.groupby(group_cols).agg({
-        spend_col: 'sum',
-        roi_col: 'mean',
-        'Total_Revenue': 'sum'
-    }).reset_index()
-
-    # Create hover text
-    agg_df['hover_text'] = agg_df.apply(lambda row: f"{row[group_cols[0]]} ({row[group_cols[1]]})<br>Spend: ₹{row[spend_col]:,.0f}<br>ROI: {row[roi_col]:.2f}<br>Revenue: ₹{row['Total_Revenue']:,.0f}", axis=1)
-
-    fig = px.scatter(agg_df, x=spend_col, y=roi_col,
-                    size='Total_Revenue', color=roi_col,
-                    title='ROI vs Spend Analysis',
-                    labels={'x': 'Spend (₹)', 'y': 'ROI'},
-                    hover_data={'hover_text': True},
-                    color_continuous_scale='RdYlGn')
-
-    fig.update_traces(hovertemplate='%{customdata[0]}')
-    st.plotly_chart(fig, use_container_width=True)
-
-# --- MAIN APPLICATION ---
-
+# --- MAIN ---
 def main():
-    st.markdown('<div class="main-header">📊 Advertising Performance Analytics</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">💰 BSD Budget Optimizer</div>', unsafe_allow_html=True)
 
-    # Load data
     pla_df = load_pla_data()
     pca_df = load_pca_data()
-
     if pla_df is None and pca_df is None:
-        st.error("Unable to load data from Google Drive.")
-        st.info("Add PLA_CSV_URL and PCA_CSV_URL to Streamlit Cloud Secrets (App → Settings → Secrets). Use direct download links from your Drive folder.")
         return
 
-    # Sidebar
-    st.sidebar.title("🎛️ Controls")
+    pla_df = calculate_pla_kpis(pla_df) if pla_df is not None else None
+    pca_df = calculate_pca_kpis(pca_df) if pca_df is not None else None
 
-    # Data source selection
-    data_source = st.sidebar.selectbox(
-        "Select Data Source",
-        ["PLA (Brand Level)", "PCA (Campaign Level)"],
-        index=0
-    )
+    # Filter: Electronics and LargeAppliances only (no Mobile)
+    bu_col = 'business_unit' if 'business_unit' in (pla_df.columns if pla_df is not None else []) else 'analytic_vertical'
+    if bu_col not in (pla_df.columns if pla_df is not None else []) and pca_df is not None:
+        bu_col = 'business_unit' if 'business_unit' in pca_df.columns else None
+    allowed_bu = ['Electronics', 'LargeAppliances']
+    if pla_df is not None and bu_col and bu_col in pla_df.columns:
+        pla_df = pla_df[pla_df[bu_col].astype(str).str.strip().isin(allowed_bu)]
+    if pca_df is not None and bu_col and bu_col in pca_df.columns:
+        pca_df = pca_df[pca_df[bu_col].astype(str).str.strip().isin(allowed_bu)]
 
-    data_type = 'pla' if data_source == "PLA (Brand Level)" else 'pca'
-    df = pla_df if data_type == 'pla' else pca_df
+    tab1, tab2, tab3 = st.tabs(["💰 Budget Optimizer", "🔄 Backward Budget Calculator", "🔍 Brand Insights"])
 
-    if df is None:
-        st.error(f"Unable to load {data_source} data.")
+    # Build filter options from available data
+    df_ref = pla_df if pla_df is not None else pca_df
+    if df_ref is None:
+        st.error("No data available.")
         return
 
-    # Calculate KPIs
-    df_with_kpis = calculate_pla_kpis(df) if data_type == 'pla' else calculate_pca_kpis(df)
+    bu_col_opt = 'business_unit' if 'business_unit' in df_ref.columns else ('analytic_vertical' if 'analytic_vertical' in df_ref.columns else None)
+    sc_col_opt = 'analytic_super_category' if 'analytic_super_category' in df_ref.columns else ('super_category' if 'super_category' in df_ref.columns else None)
 
-    # Date filter
-    if 'day_date' in df_with_kpis.columns and len(df_with_kpis['day_date'].dropna().unique()) > 1:
-        date_range = st.sidebar.date_input(
-            "Select Date Range",
-            [df_with_kpis['day_date'].min(), df_with_kpis['day_date'].max()]
-        )
-        if len(date_range) == 2:
-            df_filtered = df_with_kpis[(df_with_kpis['day_date'] >= pd.to_datetime(date_range[0])) &
-                                      (df_with_kpis['day_date'] <= pd.to_datetime(date_range[1]))]
-        else:
-            df_filtered = df_with_kpis
-    else:
-        df_filtered = df_with_kpis
+    st.sidebar.subheader("Filters (Budget Optimizer)")
+    sel_bu = st.sidebar.selectbox("BU", ['All'] + sorted(df_ref[bu_col_opt].dropna().astype(str).unique().tolist())) if bu_col_opt and bu_col_opt in df_ref.columns else 'All'
+    sel_brand = st.sidebar.selectbox("Brand", ['All'] + sorted(df_ref['brand'].dropna().astype(str).unique().tolist()))
+    sel_sc = st.sidebar.selectbox("Super Category", ['All'] + sorted(df_ref[sc_col_opt].dropna().astype(str).unique().tolist())) if sc_col_opt and sc_col_opt in df_ref.columns else 'All'
 
-    # BU, Brand, Super Category filters
-    st.sidebar.subheader("🔍 Filters")
-    filter_cols = []
-    bu_cols = [c for c in ['bu', 'BU', 'business_unit', 'analytic_vertical'] if c in df_filtered.columns]
-    brand_col = 'brand' if 'brand' in df_filtered.columns else None
-    sc_col = 'analytic_super_category' if data_type == 'pla' and 'analytic_super_category' in df_filtered.columns else ('super_category' if 'super_category' in df_filtered.columns else None)
+    def apply_filters(df):
+        if df is None or df.empty:
+            return df
+        out = df.copy()
+        if bu_col_opt and bu_col_opt in out.columns and sel_bu != 'All':
+            out = out[out[bu_col_opt].astype(str).str.strip() == sel_bu]
+        if sel_brand != 'All':
+            out = out[out['brand'].astype(str).str.strip() == sel_brand]
+        if sc_col_opt and sc_col_opt in out.columns and sel_sc != 'All':
+            out = out[out[sc_col_opt].astype(str).str.strip() == sel_sc]
+        return out
 
-    if bu_cols:
-        bu_col = bu_cols[0]
-        bu_options = ['All'] + sorted(df_filtered[bu_col].dropna().astype(str).unique().tolist())
-        selected_bu = st.sidebar.selectbox("BU", bu_options)
-        if selected_bu != 'All':
-            df_filtered = df_filtered[df_filtered[bu_col].astype(str) == selected_bu]
-    if brand_col:
-        brand_options = ['All'] + sorted(df_filtered[brand_col].dropna().astype(str).unique().tolist())
-        selected_brand = st.sidebar.selectbox("Brand", brand_options)
-        if selected_brand != 'All':
-            df_filtered = df_filtered[df_filtered[brand_col].astype(str) == selected_brand]
-    if sc_col:
-        sc_options = ['All'] + sorted(df_filtered[sc_col].dropna().astype(str).unique().tolist())
-        selected_sc = st.sidebar.selectbox("Super Category", sc_options)
-        if selected_sc != 'All':
-            df_filtered = df_filtered[df_filtered[sc_col].astype(str) == selected_sc]
-
-    if df_filtered.empty:
-        st.warning("No data matches the selected filters. Please adjust BU, Brand, or Super Category.")
-        return
-
-    # Main content
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 Overview", "🎯 Performance Analysis", "💰 Budget Optimizer", "🔍 Insights"])
+    pla_f = apply_filters(pla_df) if pla_df is not None else None
+    pca_f = apply_filters(pca_df) if pca_df is not None else None
 
     with tab1:
-        st.header("Overview Dashboard")
-        create_kpi_summary(df_filtered, f"{data_source} Performance", data_type)
+        st.subheader("Budget Optimizer (BSD 6–12 May)")
+        st.caption("Uses full historical data. No date filter. Local filters: BU, Brand, Super Category.")
 
-        # Performance by key dimensions
-        col1, col2 = st.columns(2)
+        total_budget = st.number_input("Total Budget (₹)", min_value=10000, max_value=10000000, value=100000, step=10000)
+        kpi_options = [c for c in ['Total_ROI', 'Direct_ROI', 'Indirect_ROI', 'CTR', 'Direct_CVR', 'Indirect_CVR'] if c in df_ref.columns]
+        selected_kpi = st.selectbox("Optimize for KPI", kpi_options or ['Total_ROI'])
 
-        with col1:
-            st.subheader("Performance by Brand")
-            create_performance_chart(df_filtered, 'brand', 'Total_ROI', data_type)
+        # PLA/PCA split by historical spend ratio
+        pla_hist = pla_f['spend'].sum() if pla_f is not None and not pla_f.empty and 'spend' in pla_f.columns else 0
+        pca_hist = pca_f['adspend'].sum() if pca_f is not None and not pca_f.empty and 'adspend' in pca_f.columns else 0
+        tot_hist = pla_hist + pca_hist
+        pla_share = pla_hist / tot_hist if tot_hist > 0 else 0.5
+        pca_share = 1.0 - pla_share
+        pla_budget = total_budget * pla_share
+        pca_budget = total_budget * pca_share
 
-        with col2:
-            st.subheader("Performance by Supercategory")
-            create_performance_chart(df_filtered, 'supercategory', 'Total_ROI', data_type)
+        if st.button("🚀 Optimize"):
+            results = []
+            if pla_f is not None and not pla_f.empty and pla_budget > 0:
+                pla_res = optimize_budget(pla_f, pla_budget, 'pla', selected_kpi, ['page_context', 'slot_type'] if all(c in pla_f.columns for c in ['page_context', 'slot_type']) else None)
+                pla_res['Format'] = 'PLA'
+                results.append(pla_res)
+            if pca_f is not None and not pca_f.empty and pca_budget > 0:
+                pca_res = optimize_budget(pca_f, pca_budget, 'pca', selected_kpi)
+                pca_res['Format'] = 'PCA'
+                results.append(pca_res)
 
-        # ROI vs Spend Analysis
-        st.subheader("ROI vs Spend Scatter Plot")
-        create_roi_vs_spend_scatter(df_filtered, data_type)
+            if not results:
+                st.warning("No allocation possible.")
+                return
+
+            combined = pd.concat(results, ignore_index=True)
+            total_rec = combined['Recommended_Budget'].sum()
+            total_rev = combined['Expected_Revenue'].sum()
+            avg_roi = total_rev / total_rec if total_rec > 0 else 0
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total Recommended Budget", f"₹{total_rec:,.2f}")
+            col2.metric("Expected Revenue", f"₹{total_rev:,.2f}")
+            col3.metric("Expected ROI (Revenue/Spend)", f"{avg_roi:.2f}")
+
+            cat_col = 'analytic_super_category' if 'analytic_super_category' in combined.columns else 'super_category'
+            base_cols = ['Format', 'brand', cat_col]
+            if 'page_context' in combined.columns:
+                base_cols.append('page_context')
+            if 'slot_type' in combined.columns:
+                base_cols.append('slot_type')
+            base_cols += ['Recommended_Budget', 'Expected_Revenue', 'Expected_ROI', 'Efficiency_Score']
+            disp = combined[[c for c in base_cols if c in combined.columns]].copy()
+            disp = disp.rename(columns={'brand': 'Brand', cat_col: 'Category', 'page_context': 'Page Context', 'slot_type': 'Slot Type',
+                                       'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'})
+            st.dataframe(disp.round(2), use_container_width=True)
+
+            # 7-day phasing
+            st.subheader("7-Day Phasing (BSD 6–12 May)")
+            df_ph = pla_f if pla_f is not None and not pla_f.empty else pca_f
+            bu_val = sel_bu if sel_bu != 'All' else (str(df_ph[bu_col_opt].mode().iloc[0]) if df_ph is not None and not df_ph.empty and bu_col_opt and bu_col_opt in df_ph.columns and not df_ph[bu_col_opt].dropna().empty else 'Electronics')
+            sc_val = sel_sc if sel_sc != 'All' else (str(df_ph[sc_col_opt].mode().iloc[0]) if df_ph is not None and not df_ph.empty and sc_col_opt and sc_col_opt in df_ph.columns and not df_ph[sc_col_opt].dropna().empty else 'Gaming')
+            phasing = get_phasing_for_bu_sc(bu_val, sc_val)
+            phasing_df = pd.DataFrame({'Day': BSD_DAYS, 'Share %': [f"{p*100:.1f}%" for p in phasing], 'Budget (₹)': [total_budget * p for p in phasing]})
+            st.dataframe(phasing_df, use_container_width=True, hide_index=True)
 
     with tab2:
-        st.header("Detailed Performance Analysis")
+        st.subheader("🔄 Backward Budget Calculator")
+        st.caption("Enter a KPI and target value → get required PLA (page context, slot) and PCA budget.")
 
-        # Metric selection
-        metric_options = ['Total_ROI', 'Direct_ROI', 'Indirect_ROI', 'CTR', 'Direct_CVR', 'Indirect_CVR']
-        selected_metric = st.selectbox("Select Metric to Analyze", metric_options)
+        kpi_bw = st.selectbox("Select KPI", ['Total_ROI', 'Direct_ROI', 'Indirect_ROI', 'Total_Revenue', 'Total_Units', 'Direct_CVR', 'Indirect_CVR'], key='bw_kpi')
+        target_value = st.number_input("Target Value", min_value=0.0, value=2.0, step=0.1, format="%.2f", key='bw_target',
+                                       help="ROI: target ROI | Revenue: ₹ | Units: count | CVR: units per ₹ spend")
+        target_revenue = 500000
+        target_units_cvr = 100
+        if kpi_bw in ['Total_ROI', 'Direct_ROI', 'Indirect_ROI']:
+            target_revenue = st.number_input("Target Revenue (₹) - required for ROI calc", min_value=0, value=500000, step=10000, key='bw_rev')
+            st.caption("Budget = Target Revenue / Target ROI")
+        if kpi_bw in ['Direct_CVR', 'Indirect_CVR']:
+            target_units_cvr = st.number_input("Target Units (for CVR calc)", min_value=0, value=100, key='bw_units')
+            st.caption("Budget = Target Units / Target CVR")
 
-        # Grouping options
-        if data_type == 'pla':
-            group_options = ['brand', 'analytic_super_category', 'analytic_vertical', 'page_context', 'slot_type']
-        else:
-            group_options = ['brand', 'super_category', 'page_type', 'creative_type']
+        if st.button("🔄 Calculate Required Budget", key='bw_btn'):
+            pla_hist_spend = pla_f['spend'].sum() if pla_f is not None and not pla_f.empty and 'spend' in pla_f.columns else 0
+            pca_hist_spend = pca_f['adspend'].sum() if pca_f is not None and not pca_f.empty and 'adspend' in pca_f.columns else 0
+            pla_hist_rev = pla_f['Total_Revenue'].sum() if pla_f is not None and not pla_f.empty else 0
+            pca_hist_rev = pca_f['Total_Revenue'].sum() if pca_f is not None and not pca_f.empty else 0
+            pla_hist_units = pla_f['Total_Units'].sum() if pla_f is not None and not pla_f.empty else 0
+            pca_hist_units = pca_f['Total_Units'].sum() if pca_f is not None and not pca_f.empty else 0
 
-        selected_group = st.selectbox("Group By", group_options)
+            total_budget_req = 0
+            if kpi_bw in ['Total_ROI', 'Direct_ROI', 'Indirect_ROI']:
+                if target_value <= 0:
+                    st.error("Target ROI must be > 0")
+                    total_budget_req = 0
+                else:
+                    total_budget_req = target_revenue / target_value
+            elif kpi_bw == 'Total_Revenue':
+                hist_roi = (pla_hist_rev + pca_hist_rev) / (pla_hist_spend + pca_hist_spend) if (pla_hist_spend + pca_hist_spend) > 0 else 0
+                total_budget_req = target_value / hist_roi if hist_roi > 0 else 0
+            elif kpi_bw == 'Total_Units':
+                hist_cvr = (pla_hist_units + pca_hist_units) / (pla_hist_spend + pca_hist_spend) if (pla_hist_spend + pca_hist_spend) > 0 else 0
+                total_budget_req = target_value / hist_cvr if hist_cvr > 0 else 0
+            elif kpi_bw in ['Direct_CVR', 'Indirect_CVR']:
+                total_budget_req = target_units_cvr / target_value if target_value > 0 else 0
 
-        # Create analysis chart
-        if selected_group in df_filtered.columns:
-            agg_df = df_filtered.groupby(selected_group)[selected_metric].agg(['mean', 'sum', 'count']).reset_index()
-            agg_df = agg_df.sort_values('mean', ascending=False)
+            if total_budget_req <= 0:
+                st.warning("Could not compute budget. Check inputs.")
+            else:
+                tot_hist = pla_hist_spend + pca_hist_spend
+                pla_share = pla_hist_spend / tot_hist if tot_hist > 0 else 0.5
+                pca_share = 1.0 - pla_share
+                pla_budget_req = total_budget_req * pla_share
+                pca_budget_req = total_budget_req * pca_share
 
-            fig = px.bar(agg_df.head(15), x=selected_group, y='mean',
-                        title=f'Average {selected_metric} by {selected_group}',
-                        labels={'mean': f'Average {selected_metric}'})
-            fig.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig, use_container_width=True)
+                st.success(f"**Total Budget Required: ₹{total_budget_req:,.2f}**")
+                col1, col2 = st.columns(2)
+                col1.metric("PLA Budget Required", f"₹{pla_budget_req:,.2f}")
+                col2.metric("PCA Budget Required", f"₹{pca_budget_req:,.2f}")
 
-            # Show top/bottom performers
-            col1, col2 = st.columns(2)
+                # PLA allocation with page_context, slot_type
+                if pla_f is not None and not pla_f.empty and pla_budget_req > 0:
+                    st.subheader("PLA Budget Allocation (by Page Context & Slot)")
+                    kpi_for_alloc = kpi_bw if kpi_bw in pla_f.columns else 'Total_ROI'
+                    pla_res_bw = optimize_budget(pla_f, pla_budget_req, 'pla', kpi_for_alloc,
+                                                 ['page_context', 'slot_type'] if all(c in pla_f.columns for c in ['page_context', 'slot_type']) else None)
+                    cat_col = 'analytic_super_category' if 'analytic_super_category' in pla_res_bw.columns else 'super_category'
+                    cols = ['Format', 'brand', cat_col, 'Recommended_Budget', 'Expected_Revenue', 'Expected_ROI', 'Efficiency_Score']
+                    if 'page_context' in pla_res_bw.columns:
+                        cols.insert(4, 'page_context')
+                    if 'slot_type' in pla_res_bw.columns:
+                        cols.insert(5, 'slot_type')
+                    cols = [c for c in cols if c in pla_res_bw.columns]
+                    pla_res_bw = pla_res_bw.assign(Format='PLA')
+                    disp_pla = pla_res_bw[[c for c in cols if c in pla_res_bw.columns]].copy()
+                    disp_pla = disp_pla.rename(columns={'brand': 'Brand', cat_col: 'Category', 'page_context': 'Page Context', 'slot_type': 'Slot Type',
+                                                       'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'})
+                    st.dataframe(disp_pla.round(2), use_container_width=True, hide_index=True)
 
-            with col1:
-                st.subheader(f"Top 5 {selected_group}")
-                st.dataframe(agg_df.head(5)[[selected_group, 'mean', 'sum', 'count']],
-                           use_container_width=True)
-
-            with col2:
-                st.subheader(f"Bottom 5 {selected_group}")
-                st.dataframe(agg_df.tail(5)[[selected_group, 'mean', 'sum', 'count']],
-                           use_container_width=True)
+                if pca_f is not None and not pca_f.empty and pca_budget_req > 0:
+                    st.subheader("PCA Budget Allocation")
+                    kpi_pca = kpi_bw if kpi_bw in pca_f.columns else 'Total_ROI'
+                    pca_res_bw = optimize_budget(pca_f, pca_budget_req, 'pca', kpi_pca)
+                    pca_res_bw = pca_res_bw.assign(Format='PCA')
+                    cat_col = 'super_category' if 'super_category' in pca_res_bw.columns else 'analytic_super_category'
+                    disp_pca = pca_res_bw[['Format', 'brand', cat_col, 'Recommended_Budget', 'Expected_Revenue', 'Expected_ROI', 'Efficiency_Score']].copy()
+                    disp_pca = disp_pca.rename(columns={'brand': 'Brand', cat_col: 'Category', 'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'})
+                    st.dataframe(disp_pca.round(2), use_container_width=True, hide_index=True)
 
     with tab3:
-        st.header("💰 Groundbreaking Budget Optimizer")
-
-        # KPI selection for budget optimization
-        kpi_options = [c for c in ['Total_ROI', 'Direct_ROI', 'Indirect_ROI', 'CTR', 'Direct_CVR', 'Indirect_CVR'] if c in df_filtered.columns]
-        if not kpi_options:
-            kpi_options = ['Total_ROI']
-        selected_kpi = st.selectbox(
-            "Select KPI to optimize for",
-            kpi_options,
-            help="Budget will be allocated based on historical performance of this KPI"
-        )
-
-        # Budget input
-        total_budget = st.number_input(
-            "Enter Total Budget for Upcoming BSD Sales (₹)",
-            min_value=10000,
-            max_value=10000000,
-            value=100000,
-            step=10000
-        )
-
-        if st.button("🚀 Optimize Budget Allocation"):
-            with st.spinner("Analyzing historical performance and optimizing budget allocation..."):
-                optimization_results = optimize_budget_historical(df_filtered, total_budget, data_type, kpi_col=selected_kpi)
-
-                st.success("Budget optimization completed!")
-
-                # Display results
-                st.subheader("Recommended Budget Allocation")
-
-                # Summary metrics
-                total_recommended = optimization_results['Recommended_Budget'].sum()
-                total_expected_revenue = optimization_results['Expected_Revenue'].sum()
-                avg_expected_roi = optimization_results['Expected_ROI'].mean()
-
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Total Recommended Budget", f"₹{total_recommended:,.2f}")
-                with col2:
-                    st.metric("Expected Revenue", f"₹{total_expected_revenue:,.2f}")
-                with col3:
-                    st.metric("Expected ROI", f"{avg_expected_roi:.2f}")
-
-                # Detailed allocation table
-                st.subheader("Detailed Budget Allocation")
-                display_df = optimization_results[[
-                    'brand', 'analytic_super_category' if data_type == 'pla' else 'super_category',
-                    'Recommended_Budget', 'Expected_Revenue', 'Expected_ROI', 'Efficiency_Score'
-                ]].copy()
-
-                display_df.columns = ['Brand', 'Category', 'Budget (₹)', 'Expected Revenue (₹)', 'Expected ROI', 'Efficiency Score']
-                display_df = display_df.round(2)
-                st.dataframe(display_df, use_container_width=True)
-
-                # Visualization
-                fig = px.treemap(optimization_results,
-                               path=['brand', 'analytic_super_category' if data_type == 'pla' else 'super_category'],
-                               values='Recommended_Budget',
-                               title='Budget Allocation Treemap')
-                st.plotly_chart(fig, use_container_width=True)
-
-                # Performance comparison
-                fig2 = px.scatter(optimization_results, x='Recommended_Budget', y='Expected_ROI',
-                                size='Expected_Revenue', color='brand',
-                                title='Budget vs Expected Performance')
-                st.plotly_chart(fig2, use_container_width=True)
-
-    with tab4:
-        st.header("🔍 AI-Powered Insights & Recommendations")
-
-        # Generate recommendations
-        recommendations = generate_recommendations(df_filtered, data_type)
-
-        if recommendations:
-            for rec in recommendations:
-                if rec['type'] == 'success':
-                    st.markdown(f'<div class="recommendation-box"><strong>{rec["title"]}</strong><br>{rec["message"]}</div>', unsafe_allow_html=True)
-                elif rec['type'] == 'warning':
-                    st.markdown(f'<div class="warning-box"><strong>{rec["title"]}</strong><br>{rec["message"]}</div>', unsafe_allow_html=True)
-                else:
-                    st.info(f"**{rec['title']}**\n\n{rec['message']}")
-        else:
-            st.info("No specific recommendations available based on current data.")
-
-        # Key insights
-        st.subheader("Key Performance Insights")
-
-        # Calculate key metrics
-        total_spend = df_filtered['spend' if data_type == 'pla' else 'adspend'].sum()
-        total_revenue = df_filtered['Total_Revenue'].sum()
-        avg_roi = df_filtered['Total_ROI'].mean()
-        avg_ctr = df_filtered['CTR'].mean()
-
-        insights = []
-
-        if avg_roi > 2.0:
-            insights.append("✅ Excellent ROI performance - you're generating strong returns on ad spend")
-        elif avg_roi > 1.0:
-            insights.append("⚠️ Moderate ROI - there's room for optimization")
-        else:
-            insights.append("❌ Poor ROI - immediate attention needed to improve campaign efficiency")
-
-        if avg_ctr > 0.02:
-            insights.append("🎯 Strong CTR indicates good ad relevance and targeting")
-        elif avg_ctr > 0.01:
-            insights.append("📊 Average CTR - consider A/B testing ad creative")
-        else:
-            insights.append("📉 Low CTR - review ad creative and targeting strategy")
-
-        direct_revenue_pct = (df_filtered['direct_rev'].sum() / total_revenue * 100) if total_revenue > 0 else 0
-        if direct_revenue_pct > 70:
-            insights.append("💪 Strong direct revenue contribution - excellent conversion optimization")
-        elif direct_revenue_pct > 50:
-            insights.append("🔄 Balanced direct/indirect revenue mix")
-        else:
-            insights.append("🔗 Heavy reliance on indirect revenue - focus on direct conversion optimization")
-
-        for insight in insights:
-            st.markdown(f'<div class="metric-card">{insight}</div>', unsafe_allow_html=True)
-
-        # Data export
-        st.subheader("Export Analysis Results")
-        if st.button("📊 Export to CSV"):
-            csv_data = df_filtered.to_csv(index=False)
-            st.download_button(
-                label="Download CSV",
-                data=csv_data,
-                file_name=f"{data_type}_analysis_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
+        st.subheader("Brand-Level Insights")
+        dfs_ins = []
+        if pla_f is not None and not pla_f.empty:
+            p = pla_f.copy()
+            p['Spend'] = p['spend']
+            dfs_ins.append(p[['brand', 'Spend', 'Total_Revenue', 'Total_ROI', 'CTR']])
+        if pca_f is not None and not pca_f.empty:
+            p = pca_f.copy()
+            p['Spend'] = p['adspend']
+            dfs_ins.append(p[['brand', 'Spend', 'Total_Revenue', 'Total_ROI', 'CTR']])
+        if not dfs_ins:
+            st.info("No data for selected filters.")
+            return
+        df_ins = pd.concat(dfs_ins, ignore_index=True)
+        by_brand = df_ins.groupby('brand').agg(
+            Total_Spend=('Spend', 'sum'),
+            Total_Revenue=('Total_Revenue', 'sum'),
+            CTR=('CTR', 'mean')
+        ).reset_index()
+        by_brand['ROI'] = np.where(by_brand['Total_Spend'] > 0, by_brand['Total_Revenue'] / by_brand['Total_Spend'], 0)
+        st.dataframe(by_brand.round(2), use_container_width=True, hide_index=True)
+        top = by_brand.nlargest(3, 'ROI')
+        low = by_brand.nsmallest(3, 'ROI')
+        st.markdown(f'<div class="recommendation-box"><strong>🚀 Top Brands (ROI)</strong><br>{", ".join(top["brand"].tolist())}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="warning-box"><strong>⚠️ Review</strong><br>{", ".join(low["brand"].tolist())}</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
