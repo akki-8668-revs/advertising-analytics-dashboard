@@ -4,8 +4,23 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import io
+import re
 import warnings
 warnings.filterwarnings('ignore')
+
+# Try to import gdown for Google Drive downloads
+try:
+    import gdown
+    HAS_GDOWN = True
+except ImportError:
+    HAS_GDOWN = False
+
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
 
 # Set page configuration
 st.set_page_config(
@@ -51,46 +66,163 @@ st.markdown("""
 
 # --- DATA LOADING FUNCTIONS ---
 
+def _download_from_google_drive(url_or_id):
+    """Download file from Google Drive URL and return bytes. Handles both full URL and file ID."""
+    if not url_or_id or not isinstance(url_or_id, str):
+        return None
+    url_or_id = url_or_id.strip()
+    file_id = None
+    if url_or_id.startswith("http"):
+        match = re.search(r'[?&]id=([a-zA-Z0-9_-]+)', url_or_id)
+        if match:
+            file_id = match.group(1)
+        else:
+            match = re.search(r'/d/([a-zA-Z0-9_-]+)', url_or_id)
+            if match:
+                file_id = match.group(1)
+    else:
+        file_id = url_or_id
+    if not file_id:
+        return None
+    url = f"https://drive.google.com/uc?id={file_id}"
+    if HAS_GDOWN:
+        try:
+            import tempfile
+            import os
+            with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as tmp:
+                gdown.download(url, tmp.name, quiet=True, fuzzy=True)
+                with open(tmp.name, 'rb') as f:
+                    data = f.read()
+                os.unlink(tmp.name)
+                return data
+        except Exception:
+            pass
+    if HAS_REQUESTS:
+        try:
+            dl_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+            session = requests.Session()
+            resp = session.get(dl_url, stream=True)
+            for key, val in resp.cookies.items():
+                if 'download_warning' in key.lower():
+                    resp = session.get(dl_url, params={'confirm': val}, stream=True)
+                    break
+            resp.raise_for_status()
+            return resp.content
+        except Exception:
+            pass
+    return None
+
+def _load_csv_from_drive_folder(folder_id, name_pattern):
+    """Load CSV from Drive folder by name pattern (e.g. ['pla','onetim'])."""
+    if not HAS_GDOWN:
+        return None
+    try:
+        import tempfile
+        import os
+        with tempfile.TemporaryDirectory() as tmpdir:
+            url = f"https://drive.google.com/drive/folders/{folder_id}"
+            gdown.download_folder(url, output=tmpdir, quiet=True, use_cookies=False)
+            for root, _, files in os.walk(tmpdir):
+                for f in files:
+                    if f.lower().endswith('.csv') and all(p in f.lower() for p in name_pattern):
+                        return pd.read_csv(os.path.join(root, f))
+    except Exception:
+        pass
+    return None
+
+def _process_pla_df(df):
+    """Process PLA dataframe - date and numeric columns."""
+    if 'day_date' in df.columns:
+        df['day_date'] = pd.to_datetime(df['day_date'], format='%d-%m-%Y', errors='coerce')
+    for col in ['unique_views', 'clicks', 'spend', 'atc', 'total_views', 'listings', 'direct_units', 'indirect_units', 'direct_rev', 'indirect_rev']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    return df
+
+def _process_pca_df(df):
+    """Process PCA dataframe - date and numeric columns."""
+    if 'day_date' in df.columns:
+        df['day_date'] = pd.to_datetime(df['day_date'], format='%d-%m-%Y', errors='coerce')
+    for col in ['viewcount', 'clicks', 'adspend', 'direct_units', 'indirect_units', 'ppv', 'direct_rev', 'indirect_rev']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    return df
+
 @st.cache_data
 def load_pla_data():
     """Load PLA (Performance by Listing Ads) data from Google Drive"""
     try:
-        # Use Google Drive URL from secrets instead of local file
-        pla_url = st.secrets.get("PLA_CSV_URL", "pla_onetim_2026-02-26.csv")
-
-        df = pd.read_csv(pla_url)
-        # Convert date column
-        df['day_date'] = pd.to_datetime(df['day_date'], format='%d-%m-%Y')
-        # Convert numeric columns
-        numeric_cols = ['unique_views', 'clicks', 'spend', 'atc', 'total_views',
-                       'listings', 'direct_units', 'indirect_units', 'direct_rev', 'indirect_rev']
-        for col in numeric_cols:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        return df
+        pla_url = None
+        folder_id = None
+        if hasattr(st, 'secrets') and st.secrets:
+            pla_url = st.secrets.get("PLA_CSV_URL") or st.secrets.get("PLA_FILE_ID")
+            folder_id = st.secrets.get("GOOGLE_DRIVE_FOLDER_ID")
+            if not folder_id and st.secrets.get("GOOGLE_DRIVE_FOLDER_URL"):
+                m = re.search(r'/folders/([a-zA-Z0-9_-]+)', str(st.secrets.get("GOOGLE_DRIVE_FOLDER_URL", "")))
+                if m:
+                    folder_id = m.group(1)
+        if not pla_url and folder_id:
+            df = _load_csv_from_drive_folder(folder_id, ['pla', 'onetim'])
+            if df is not None:
+                return _process_pla_df(df)
+        if not pla_url:
+            st.error("PLA_CSV_URL or GOOGLE_DRIVE_FOLDER_ID not configured. Add to Streamlit Cloud: App → Settings → Secrets")
+            st.info("Add: PLA_CSV_URL = \"https://drive.google.com/uc?export=download&id=YOUR_FILE_ID\"")
+            return None
+        # Download from Google Drive
+        data = _download_from_google_drive(pla_url)
+        if data is None:
+            if str(pla_url).startswith("http") and HAS_REQUESTS:
+                r = requests.get(pla_url)
+                r.raise_for_status()
+                data = r.content
+            else:
+                st.error("Install requests and gdown: pip install requests gdown")
+                return None
+        if data is not None:
+            df = pd.read_csv(io.BytesIO(data))
+        return _process_pla_df(df)
     except Exception as e:
         st.error(f"Error loading PLA data from Google Drive: {e}")
-        st.info("Make sure PLA_CSV_URL is configured in secrets.toml")
+        st.info("Ensure PLA_CSV_URL is set in Streamlit Cloud Secrets with your Google Drive file link.")
         return None
 
 @st.cache_data
 def load_pca_data():
     """Load PCA (Product Creative Ads) data from Google Drive"""
     try:
-        # Use Google Drive URL from secrets instead of local file
-        pca_url = st.secrets.get("PCA_CSV_URL", "pca_onetim_2026-02-26.csv")
-
-        df = pd.read_csv(pca_url)
-        # Convert date column
-        df['day_date'] = pd.to_datetime(df['day_date'], format='%d-%m-%Y')
-        # Convert numeric columns
-        numeric_cols = ['viewcount', 'clicks', 'adspend', 'direct_units', 'indirect_units',
-                       'ppv', 'direct_rev', 'indirect_rev']
-        for col in numeric_cols:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        return df
+        pca_url = None
+        folder_id = None
+        if hasattr(st, 'secrets') and st.secrets:
+            pca_url = st.secrets.get("PCA_CSV_URL") or st.secrets.get("PCA_FILE_ID")
+            folder_id = st.secrets.get("GOOGLE_DRIVE_FOLDER_ID")
+            if not folder_id and st.secrets.get("GOOGLE_DRIVE_FOLDER_URL"):
+                m = re.search(r'/folders/([a-zA-Z0-9_-]+)', str(st.secrets.get("GOOGLE_DRIVE_FOLDER_URL", "")))
+                if m:
+                    folder_id = m.group(1)
+        if not pca_url and folder_id:
+            df = _load_csv_from_drive_folder(folder_id, ['pca', 'onetim'])
+            if df is not None:
+                return _process_pca_df(df)
+        if not pca_url:
+            st.error("PCA_CSV_URL or GOOGLE_DRIVE_FOLDER_ID not configured. Add to Streamlit Cloud: App → Settings → Secrets")
+            st.info("Add: PCA_CSV_URL = \"https://drive.google.com/uc?export=download&id=YOUR_FILE_ID\"")
+            return None
+        data = _download_from_google_drive(pca_url)
+        if data is None:
+            if str(pca_url).startswith("http") and HAS_REQUESTS:
+                r = requests.get(pca_url)
+                r.raise_for_status()
+                data = r.content
+            else:
+                st.error("Install requests and gdown: pip install requests gdown")
+                return None
+        if data is not None:
+            df = pd.read_csv(io.BytesIO(data))
+        return _process_pca_df(df)
     except Exception as e:
         st.error(f"Error loading PCA data from Google Drive: {e}")
-        st.info("Make sure PCA_CSV_URL is configured in secrets.toml")
+        st.info("Ensure PCA_CSV_URL is set in Streamlit Cloud Secrets with your Google Drive file link.")
         return None
 
 # --- KPI CALCULATION FUNCTIONS ---
@@ -127,30 +259,31 @@ def calculate_pca_kpis(df):
 
 # --- BUDGET OPTIMIZATION FUNCTIONS ---
 
-def optimize_budget_historical(df, total_budget, data_type='pla'):
+def optimize_budget_historical(df, total_budget, data_type='pla', kpi_col='Total_ROI'):
     """
-    Optimize budget allocation based on historical performance
+    Optimize budget allocation based on historical performance.
+    Uses selected KPI for efficiency scoring.
     Returns recommended budget allocation by brand/supercategory
     """
     if data_type == 'pla':
         spend_col = 'spend'
-        roi_col = 'Total_ROI'
         group_cols = ['brand', 'analytic_super_category']
     else:
         spend_col = 'adspend'
-        roi_col = 'Total_ROI'
         group_cols = ['brand', 'super_category']
 
-    # Aggregate performance by groups
-    perf_df = df.groupby(group_cols).agg({
-        spend_col: 'sum',
-        roi_col: 'mean',
-        'Total_Revenue': 'sum',
-        'Total_Units': 'sum'
-    }).reset_index()
+    # Ensure KPI column exists
+    if kpi_col not in df.columns:
+        kpi_col = 'Total_ROI'
 
-    # Calculate efficiency score (ROI * historical spend weight)
-    perf_df['Efficiency_Score'] = perf_df[roi_col] * np.log1p(perf_df[spend_col])
+    # Aggregate performance by groups
+    agg_dict = {spend_col: 'sum', 'Total_Revenue': 'sum', 'Total_Units': 'sum'}
+    if kpi_col in df.columns:
+        agg_dict[kpi_col] = 'mean'
+    perf_df = df.groupby(group_cols).agg(agg_dict).reset_index()
+
+    # Calculate efficiency score (selected KPI * historical spend weight)
+    perf_df['Efficiency_Score'] = perf_df[kpi_col] * np.log1p(perf_df[spend_col])
     perf_df['Efficiency_Score'] = perf_df['Efficiency_Score'].fillna(0)
 
     # Normalize efficiency scores
@@ -166,7 +299,7 @@ def optimize_budget_historical(df, total_budget, data_type='pla'):
         perf_df['Recommended_Budget'] = total_budget / len(perf_df)
 
     # Calculate expected outcomes
-    perf_df['Expected_ROI'] = perf_df[roi_col] * perf_df['Recommended_Budget']
+    perf_df['Expected_ROI'] = perf_df[kpi_col] * perf_df['Recommended_Budget']
     perf_df['Expected_Revenue'] = perf_df['Expected_ROI']
 
     return perf_df.sort_values('Efficiency_Score', ascending=False)
@@ -327,7 +460,8 @@ def main():
     pca_df = load_pca_data()
 
     if pla_df is None and pca_df is None:
-        st.error("Unable to load data files. Please ensure pla_onetim_2026-02-26.csv and pca_onetim_2026-02-26.csv are in the same directory.")
+        st.error("Unable to load data from Google Drive.")
+        st.info("Add PLA_CSV_URL and PCA_CSV_URL to Streamlit Cloud Secrets (App → Settings → Secrets). Use direct download links from your Drive folder.")
         return
 
     # Sidebar
@@ -351,7 +485,7 @@ def main():
     df_with_kpis = calculate_pla_kpis(df) if data_type == 'pla' else calculate_pca_kpis(df)
 
     # Date filter
-    if len(df_with_kpis['day_date'].unique()) > 1:
+    if 'day_date' in df_with_kpis.columns and len(df_with_kpis['day_date'].dropna().unique()) > 1:
         date_range = st.sidebar.date_input(
             "Select Date Range",
             [df_with_kpis['day_date'].min(), df_with_kpis['day_date'].max()]
@@ -363,6 +497,34 @@ def main():
             df_filtered = df_with_kpis
     else:
         df_filtered = df_with_kpis
+
+    # BU, Brand, Super Category filters
+    st.sidebar.subheader("🔍 Filters")
+    filter_cols = []
+    bu_cols = [c for c in ['bu', 'BU', 'business_unit', 'analytic_vertical'] if c in df_filtered.columns]
+    brand_col = 'brand' if 'brand' in df_filtered.columns else None
+    sc_col = 'analytic_super_category' if data_type == 'pla' and 'analytic_super_category' in df_filtered.columns else ('super_category' if 'super_category' in df_filtered.columns else None)
+
+    if bu_cols:
+        bu_col = bu_cols[0]
+        bu_options = ['All'] + sorted(df_filtered[bu_col].dropna().astype(str).unique().tolist())
+        selected_bu = st.sidebar.selectbox("BU", bu_options)
+        if selected_bu != 'All':
+            df_filtered = df_filtered[df_filtered[bu_col].astype(str) == selected_bu]
+    if brand_col:
+        brand_options = ['All'] + sorted(df_filtered[brand_col].dropna().astype(str).unique().tolist())
+        selected_brand = st.sidebar.selectbox("Brand", brand_options)
+        if selected_brand != 'All':
+            df_filtered = df_filtered[df_filtered[brand_col].astype(str) == selected_brand]
+    if sc_col:
+        sc_options = ['All'] + sorted(df_filtered[sc_col].dropna().astype(str).unique().tolist())
+        selected_sc = st.sidebar.selectbox("Super Category", sc_options)
+        if selected_sc != 'All':
+            df_filtered = df_filtered[df_filtered[sc_col].astype(str) == selected_sc]
+
+    if df_filtered.empty:
+        st.warning("No data matches the selected filters. Please adjust BU, Brand, or Super Category.")
+        return
 
     # Main content
     tab1, tab2, tab3, tab4 = st.tabs(["📈 Overview", "🎯 Performance Analysis", "💰 Budget Optimizer", "🔍 Insights"])
@@ -390,7 +552,7 @@ def main():
         st.header("Detailed Performance Analysis")
 
         # Metric selection
-        metric_options = ['Total_ROI', 'CTR', 'Direct_CVR', 'Indirect_CVR', 'Direct_ROI', 'Indirect_ROI', 'ROAS']
+        metric_options = ['Total_ROI', 'Direct_ROI', 'Indirect_ROI', 'CTR', 'Direct_CVR', 'Indirect_CVR']
         selected_metric = st.selectbox("Select Metric to Analyze", metric_options)
 
         # Grouping options
@@ -428,6 +590,16 @@ def main():
     with tab3:
         st.header("💰 Groundbreaking Budget Optimizer")
 
+        # KPI selection for budget optimization
+        kpi_options = [c for c in ['Total_ROI', 'Direct_ROI', 'Indirect_ROI', 'CTR', 'Direct_CVR', 'Indirect_CVR'] if c in df_filtered.columns]
+        if not kpi_options:
+            kpi_options = ['Total_ROI']
+        selected_kpi = st.selectbox(
+            "Select KPI to optimize for",
+            kpi_options,
+            help="Budget will be allocated based on historical performance of this KPI"
+        )
+
         # Budget input
         total_budget = st.number_input(
             "Enter Total Budget for Upcoming BSD Sales (₹)",
@@ -439,7 +611,7 @@ def main():
 
         if st.button("🚀 Optimize Budget Allocation"):
             with st.spinner("Analyzing historical performance and optimizing budget allocation..."):
-                optimization_results = optimize_budget_historical(df_filtered, total_budget, data_type)
+                optimization_results = optimize_budget_historical(df_filtered, total_budget, data_type, kpi_col=selected_kpi)
 
                 st.success("Budget optimization completed!")
 
