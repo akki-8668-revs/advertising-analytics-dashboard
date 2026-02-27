@@ -266,31 +266,39 @@ def calculate_traffic_phasing(base_volume, category_name, business_unit, base_cu
 
 def compute_day_level_budgets(allocation_df, sel_bu, bu_col, sc_col, df_pla, df_pca):
     """
-    Apply day-level phasing to allocation. Returns DataFrame with Day, PLA_Budget, PCA_Budget, Total_Budget.
-    Uses BU-Super Category phasing from PHASING_DATA.
+    Apply day-level phasing to allocation using BU-Super Category curves from PHASING_DATA.
+    Returns DataFrame with Day, PLA_Budget, PCA_Budget, Total_Budget.
     """
-    day_budgets = {d: {'PLA': 0, 'PCA': 0} for d in BSD_DAYS}
+    day_budgets = {d: {'PLA': 0.0, 'PCA': 0.0} for d in BSD_DAYS}
     cat_col = 'analytic_super_category' if 'analytic_super_category' in allocation_df.columns else 'super_category'
     for _, row in allocation_df.iterrows():
-        fmt = row.get('Format', 'PLA')
-        budget = row.get('Recommended_Budget', row.get('Budget (₹)', 0))
-        if budget <= 0:
-            continue
-        category = str(row.get(cat_col) or row.get('super_category') or row.get('Category', 'Gaming')).strip()
-        if sel_bu != 'All':
-            bu_val = sel_bu
-        else:
-            src = df_pla if fmt == 'PLA' and df_pla is not None and not df_pla.empty else df_pca
-            src = src if src is not None and not src.empty else None
-            sc_col_src = ('analytic_super_category' if src is not None and 'analytic_super_category' in src.columns else 'super_category') if src is not None else sc_col
-            if src is not None and bu_col and bu_col in src.columns and sc_col_src in src.columns and 'brand' in src.columns:
-                match = src[(src['brand'].astype(str) == str(row.get('brand', ''))) & (src[sc_col_src].astype(str) == category)]
-                bu_val = str(match[bu_col].mode().iloc[0]) if not match.empty and not match[bu_col].dropna().empty else 'Electronics'
+        try:
+            fmt = str(row.get('Format', 'PLA') or 'PLA')
+            budget = row.get('Recommended_Budget', row.get('Budget (₹)', 0))
+            if pd.isna(budget) or budget <= 0:
+                continue
+            budget = float(budget)
+            category = str(row.get(cat_col) or row.get('super_category') or row.get('Category') or 'Gaming').strip() or 'Gaming'
+            if sel_bu != 'All':
+                bu_val = str(sel_bu)
             else:
+                src = df_pla if fmt == 'PLA' and df_pla is not None and not df_pla.empty else df_pca
+                src = src if src is not None and not src.empty else None
                 bu_val = 'Electronics'
-        phasing = get_phasing_for_bu_sc(bu_val, category)
-        for i, day in enumerate(BSD_DAYS):
-            day_budgets[day][fmt] += budget * phasing[i]
+                if src is not None and bu_col and bu_col in src.columns and 'brand' in src.columns:
+                    sc_col_src = 'analytic_super_category' if 'analytic_super_category' in src.columns else 'super_category'
+                    if sc_col_src in src.columns:
+                        try:
+                            match = src[(src['brand'].astype(str) == str(row.get('brand', ''))) & (src[sc_col_src].astype(str) == category)]
+                            if not match.empty and bu_col in match.columns and match[bu_col].notna().any():
+                                bu_val = str(match[bu_col].mode().iloc[0])
+                        except Exception:
+                            pass
+            phasing = get_phasing_for_bu_sc(bu_val, category)
+            for i, day in enumerate(BSD_DAYS):
+                day_budgets[day][fmt] += budget * phasing[i]
+        except Exception:
+            continue
     rows = []
     for day in BSD_DAYS:
         pla_b = day_budgets[day]['PLA']
@@ -303,38 +311,46 @@ def compute_day_level_budgets(allocation_df, sel_bu, bu_col, sc_col, df_pla, df_
 
 def expand_allocation_to_daily(allocation_df, sel_bu, bu_col, sc_col, df_pla, df_pca, include_pla_detail=True):
     """
-    Expand allocation to day-level with page_context, slot for PLA. Returns list of DataFrames per day.
+    Expand allocation to day-level with page_context, slot for PLA. Uses BU-Super Category phasing.
     """
     cat_col = 'analytic_super_category' if 'analytic_super_category' in allocation_df.columns else 'super_category'
     daily_tables = []
     for day_idx, day_name in enumerate(BSD_DAYS):
         day_rows = []
         for _, row in allocation_df.iterrows():
-            fmt = row.get('Format', 'PLA')
-            budget = row.get('Recommended_Budget', row.get('Budget (₹)', 0))
-            if budget <= 0:
-                continue
-            category = str(row.get(cat_col) or row.get('super_category') or row.get('Category', '')).strip()
-            if sel_bu != 'All':
-                bu_val = sel_bu
-            else:
-                src = df_pla if fmt == 'PLA' and df_pla is not None and not df_pla.empty else df_pca
-                src = src if src is not None and not src.empty else None
-                sc_col_src = ('analytic_super_category' if src is not None and 'analytic_super_category' in src.columns else 'super_category') if src is not None else sc_col
-                if src is not None and bu_col and bu_col in src.columns and sc_col_src in src.columns:
-                    match = src[(src['brand'].astype(str) == str(row.get('brand', ''))) & (src[sc_col_src].astype(str) == category)]
-                    bu_val = str(match[bu_col].mode().iloc[0]) if not match.empty and not match[bu_col].dropna().empty else 'Electronics'
+            try:
+                fmt = str(row.get('Format', 'PLA') or 'PLA')
+                budget = row.get('Recommended_Budget', row.get('Budget (₹)', 0))
+                if pd.isna(budget) or budget <= 0:
+                    continue
+                budget = float(budget)
+                category = str(row.get(cat_col) or row.get('super_category') or row.get('Category') or '').strip() or 'Gaming'
+                if sel_bu != 'All':
+                    bu_val = str(sel_bu)
                 else:
+                    src = df_pla if fmt == 'PLA' and df_pla is not None and not df_pla.empty else df_pca
+                    src = src if src is not None and not src.empty else None
                     bu_val = 'Electronics'
-            phasing = get_phasing_for_bu_sc(bu_val, category)
-            day_budget = budget * phasing[day_idx]
-            r = {'Day': day_name, 'Format': fmt, 'Brand': row.get('brand', row.get('Brand', '')), 'Category': category,
-                 'Budget (₹)': round(day_budget, 2)}
-            if include_pla_detail and 'page_context' in allocation_df.columns:
-                r['Page Context'] = str(row.get('page_context', ''))
-            if include_pla_detail and 'slot_type' in allocation_df.columns:
-                r['Slot Type'] = str(row.get('slot_type', ''))
-            day_rows.append(r)
+                    if src is not None and bu_col and bu_col in src.columns and 'brand' in src.columns:
+                        sc_col_src = 'analytic_super_category' if 'analytic_super_category' in src.columns else 'super_category'
+                        if sc_col_src in src.columns:
+                            try:
+                                match = src[(src['brand'].astype(str) == str(row.get('brand', ''))) & (src[sc_col_src].astype(str) == category)]
+                                if not match.empty and bu_col in match.columns and match[bu_col].notna().any():
+                                    bu_val = str(match[bu_col].mode().iloc[0])
+                            except Exception:
+                                pass
+                phasing = get_phasing_for_bu_sc(bu_val, category)
+                day_budget = budget * phasing[day_idx]
+                r = {'Day': day_name, 'Format': fmt, 'Brand': row.get('brand', row.get('Brand', '')), 'Category': category,
+                     'Budget (₹)': round(day_budget, 2)}
+                if include_pla_detail and 'page_context' in allocation_df.columns:
+                    r['Page Context'] = str(row.get('page_context', ''))
+                if include_pla_detail and 'slot_type' in allocation_df.columns:
+                    r['Slot Type'] = str(row.get('slot_type', ''))
+                day_rows.append(r)
+            except Exception:
+                continue
         daily_tables.append(pd.DataFrame(day_rows) if day_rows else pd.DataFrame())
     return daily_tables
 
@@ -372,6 +388,13 @@ def optimize_budget(df, total_budget, data_type, kpi_col, group_cols_extra=None)
 
 # --- MAIN ---
 def main():
+    try:
+        _main()
+    except Exception as e:
+        st.error(f"An error occurred. Please refresh. Details: {str(e)}")
+        st.stop()
+
+def _main():
     st.markdown('<p style="text-align:center;color:#888;font-size:0.75rem;margin-bottom:0.25rem;">For Internal Use Only</p>', unsafe_allow_html=True)
     st.markdown('<div class="main-header">⚡ Spend Pulse — BSD Budget Optimizer</div>', unsafe_allow_html=True)
 
@@ -481,18 +504,11 @@ def main():
             combined_copy = combined.copy()
             if 'Format' not in combined_copy.columns:
                 combined_copy['Format'] = 'PLA'
+            day_phasing_df = compute_day_level_budgets(combined_copy, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
             try:
-                day_phasing_df = compute_day_level_budgets(combined_copy, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
+                st.session_state['day_level_optimizer'] = day_phasing_df.copy()
             except Exception:
-                pct = [1/7] * 7
-                pla_tot = (combined.loc[combined['Format'] == 'PLA', 'Recommended_Budget'].sum() if 'Format' in combined.columns and not combined.empty else 0) or total_rec * 0.5
-                pca_tot = total_rec - pla_tot
-                day_phasing_df = pd.DataFrame([
-                    {'Day': d, 'PLA Spend (₹)': round(pla_tot * pct[i], 2), 'PCA Spend (₹)': round(pca_tot * pct[i], 2),
-                     'Total Spend (₹)': round((pla_tot + pca_tot) * pct[i], 2), 'PLA %': '50%', 'PCA %': '50%'}
-                    for i, d in enumerate(BSD_DAYS)
-                ])
-            st.session_state['day_level_optimizer'] = day_phasing_df
+                pass
 
             cat_col = 'analytic_super_category' if 'analytic_super_category' in combined.columns else 'super_category'
             base_cols = ['Format', 'brand', cat_col]
@@ -506,16 +522,15 @@ def main():
                                        'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'})
             st.dataframe(disp.round(2), use_container_width=True)
 
-            # Day-wise breakdown by segment (expandable)
-            daily_tables = expand_allocation_to_daily(combined_copy, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
-            with st.expander("📋 Day-wise PLA/PCA allocation (by page context & slot)", expanded=True):
-                for i, day_name in enumerate(BSD_DAYS):
-                    if i < len(daily_tables):
-                        st.markdown(f"**{day_name}**")
-                        if not daily_tables[i].empty:
+            try:
+                daily_tables = expand_allocation_to_daily(combined_copy, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
+                with st.expander("📋 Day-wise PLA/PCA allocation (by page context & slot)", expanded=False):
+                    for i, day_name in enumerate(BSD_DAYS):
+                        if i < len(daily_tables) and not daily_tables[i].empty:
+                            st.markdown(f"**{day_name}**")
                             st.dataframe(daily_tables[i], use_container_width=True, hide_index=True)
-                        else:
-                            st.caption("No allocation for this day.")
+            except Exception:
+                pass
 
     with tab2:
         st.subheader("🔄 Backward Budget Calculator")
@@ -602,43 +617,46 @@ def main():
 
                 bw_combined = pd.concat(bw_parts, ignore_index=True) if len(bw_parts) > 1 else (bw_parts[0] if bw_parts else pd.DataFrame())
                 if not bw_combined.empty:
+                    day_phasing_bw = compute_day_level_budgets(bw_combined, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
                     try:
-                        day_phasing_bw = compute_day_level_budgets(bw_combined, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
+                        st.session_state['day_level_backward'] = day_phasing_bw.copy()
                     except Exception:
-                        pct = [1/7] * 7
-                        pla_tot = (bw_combined.loc[bw_combined['Format'] == 'PLA', 'Recommended_Budget'].sum() if 'Format' in bw_combined.columns else 0) or total_budget_req * 0.5
-                        pca_tot = total_budget_req - pla_tot
-                        day_phasing_bw = pd.DataFrame([
-                            {'Day': d, 'PLA Spend (₹)': round(pla_tot * pct[i], 2), 'PCA Spend (₹)': round(pca_tot * pct[i], 2),
-                             'Total Spend (₹)': round((pla_tot + pca_tot) * pct[i], 2), 'PLA %': '50%', 'PCA %': '50%'}
-                            for i, d in enumerate(BSD_DAYS)
-                        ])
-                    st.session_state['day_level_backward'] = day_phasing_bw
-                    daily_bw = expand_allocation_to_daily(bw_combined, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
-                    with st.expander("📋 Day-wise PLA/PCA allocation (by page context & slot)", expanded=True):
-                        for i, day_name in enumerate(BSD_DAYS):
-                            if i < len(daily_bw):
-                                st.markdown(f"**{day_name}**")
-                                if not daily_bw[i].empty:
+                        pass
+                    try:
+                        daily_bw = expand_allocation_to_daily(bw_combined, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
+                        with st.expander("📋 Day-wise PLA/PCA allocation (by page context & slot)", expanded=False):
+                            for i, day_name in enumerate(BSD_DAYS):
+                                if i < len(daily_bw) and not daily_bw[i].empty:
+                                    st.markdown(f"**{day_name}**")
                                     st.dataframe(daily_bw[i], use_container_width=True, hide_index=True)
-                                else:
-                                    st.caption("No allocation for this day.")
+                    except Exception:
+                        pass
 
     with tab3:
         st.subheader("📅 Day-Level Split (BSD 6–12 March)")
-        st.caption("7-day PLA vs PCA spend. Run Budget Optimizer or Backward Calculator first.")
-        st.markdown('<div class="spend-pulse-box"><h3>⚡ Spend Pulse — 7-Day Budget Split</h3><p>PLA vs PCA spend by day</p></div>', unsafe_allow_html=True)
+        st.caption("7-day PLA vs PCA spend using BU–Super Category phasing curves. Run Budget Optimizer or Backward Calculator first.")
+        st.markdown('<div class="spend-pulse-box"><h3>⚡ Spend Pulse — 7-Day Budget Split</h3><p>Uses BU–Super Category traffic curves (urgency vs deliberation)</p></div>', unsafe_allow_html=True)
         has_data = False
-        if 'day_level_optimizer' in st.session_state and not st.session_state['day_level_optimizer'].empty:
-            st.markdown("**From Budget Optimizer**")
-            st.dataframe(st.session_state['day_level_optimizer'], use_container_width=True, hide_index=True)
-            has_data = True
-        if 'day_level_backward' in st.session_state and not st.session_state['day_level_backward'].empty:
-            if has_data:
-                st.divider()
-            st.markdown("**From Backward Calculator**")
-            st.dataframe(st.session_state['day_level_backward'], use_container_width=True, hide_index=True)
-            has_data = True
+        try:
+            if 'day_level_optimizer' in st.session_state:
+                df_opt = st.session_state['day_level_optimizer']
+                if isinstance(df_opt, pd.DataFrame) and not df_opt.empty:
+                    st.markdown("**From Budget Optimizer**")
+                    st.dataframe(df_opt, use_container_width=True, hide_index=True)
+                    has_data = True
+        except Exception:
+            pass
+        try:
+            if 'day_level_backward' in st.session_state:
+                df_bw = st.session_state['day_level_backward']
+                if isinstance(df_bw, pd.DataFrame) and not df_bw.empty:
+                    if has_data:
+                        st.divider()
+                    st.markdown("**From Backward Calculator**")
+                    st.dataframe(df_bw, use_container_width=True, hide_index=True)
+                    has_data = True
+        except Exception:
+            pass
         if not has_data:
             st.info("No day-level data yet. Click **Optimize** in Budget Optimizer or **Calculate** in Backward Calculator first.")
 
