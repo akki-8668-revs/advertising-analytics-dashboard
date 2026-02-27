@@ -282,9 +282,10 @@ def compute_day_level_budgets(allocation_df, sel_bu, bu_col, sc_col, df_pla, df_
     for day in BSD_DAYS:
         pla_b = day_budgets[day]['PLA']
         pca_b = day_budgets[day]['PCA']
-        rows.append({'Day': day, 'PLA Budget (₹)': round(pla_b, 2), 'PCA Budget (₹)': round(pca_b, 2), 'Total (₹)': round(pla_b + pca_b, 2),
-                     'PLA %': f"{(pla_b/(pla_b+pca_b)*100):.1f}%" if (pla_b+pca_b) > 0 else "0%",
-                     'PCA %': f"{(pca_b/(pla_b+pca_b)*100):.1f}%" if (pla_b+pca_b) > 0 else "0%"})
+        tot = pla_b + pca_b
+        rows.append({'Day': day, 'PLA Spend (₹)': round(pla_b, 2), 'PCA Spend (₹)': round(pca_b, 2), 'Total Spend (₹)': round(tot, 2),
+                     'PLA %': f"{(pla_b/tot*100):.1f}%" if tot > 0 else "0%",
+                     'PCA %': f"{(pca_b/tot*100):.1f}%" if tot > 0 else "0%"})
     return pd.DataFrame(rows)
 
 def expand_allocation_to_daily(allocation_df, sel_bu, bu_col, sc_col, df_pla, df_pca, include_pla_detail=True):
@@ -377,6 +378,17 @@ def main():
     bu_col_opt = 'business_unit' if 'business_unit' in df_ref.columns else ('analytic_vertical' if 'analytic_vertical' in df_ref.columns else None)
     sc_col_opt = 'analytic_super_category' if 'analytic_super_category' in df_ref.columns else ('super_category' if 'super_category' in df_ref.columns else None)
 
+    with st.sidebar.expander("📖 Where to click & what to find", expanded=False):
+        st.markdown("""
+**Budget Optimizer tab**
+- Enter budget → Click **Optimize** → Find: metrics, **Day-Level Spend Bifurcation** table (PLA/PCA per day), allocation table, day-wise breakdown (expandable)
+
+**Backward Budget Calculator tab**
+- Select KPI, enter target → Click **Calculate** → Find: required budget, PLA/PCA allocation, **Day-Level Spend Bifurcation** table, day-wise breakdown (expandable)
+
+**Brand Insights tab**
+- View brand-level metrics and recommendations
+        """)
     st.sidebar.subheader("Filters (Budget Optimizer)")
     sel_bu = st.sidebar.selectbox("BU", ['All'] + sorted(df_ref[bu_col_opt].dropna().astype(str).unique().tolist())) if bu_col_opt and bu_col_opt in df_ref.columns else 'All'
     sel_brand = st.sidebar.selectbox("Brand", ['All'] + sorted(df_ref['brand'].dropna().astype(str).unique().tolist()))
@@ -439,6 +451,15 @@ def main():
             col2.metric("Expected Revenue", f"₹{total_rev:,.2f}")
             col3.metric("Expected ROI (Revenue/Spend)", f"{avg_roi:.2f}")
 
+            # Day-level spend bifurcation (primary output)
+            st.subheader("📅 Day-Level Spend Bifurcation (BSD 6–12 May)")
+            st.caption("How much to spend on PLA vs PCA each day.")
+            combined_copy = combined.copy()
+            if 'Format' not in combined_copy.columns:
+                combined_copy['Format'] = 'PLA'
+            day_phasing_df = compute_day_level_budgets(combined_copy, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
+            st.dataframe(day_phasing_df, use_container_width=True, hide_index=True)
+
             cat_col = 'analytic_super_category' if 'analytic_super_category' in combined.columns else 'super_category'
             base_cols = ['Format', 'brand', cat_col]
             if 'page_context' in combined.columns:
@@ -451,14 +472,7 @@ def main():
                                        'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'})
             st.dataframe(disp.round(2), use_container_width=True)
 
-            # 7-day phasing (day-level prediction using BU-Super Category curves)
-            st.subheader("📅 7-Day Day-Level Split (BSD 6–12 May)")
-            st.caption("Budget split by day using BU–Super Category traffic curves (urgency vs deliberation).")
-            combined_copy = combined.copy()
-            if 'Format' not in combined_copy.columns:
-                combined_copy['Format'] = 'PLA'
-            day_phasing_df = compute_day_level_budgets(combined_copy, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
-            st.dataframe(day_phasing_df, use_container_width=True, hide_index=True)
+            # Day-wise breakdown by segment (expandable)
             daily_tables = expand_allocation_to_daily(combined_copy, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
             with st.expander("📋 Day-wise PLA/PCA allocation (by page context & slot)", expanded=True):
                 for i, day_name in enumerate(BSD_DAYS):
@@ -552,9 +566,9 @@ def main():
                     disp_pca = disp_pca.rename(columns={'brand': 'Brand', cat_col: 'Category', 'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'})
                     st.dataframe(disp_pca.round(2), use_container_width=True, hide_index=True)
 
-                # Day-level phasing for Backward Calculator
-                st.subheader("📅 7-Day Day-Level Split (BSD 6–12 May)")
-                st.caption("Required budget split by day using BU–Super Category traffic curves.")
+                # Day-level spend bifurcation for Backward Calculator
+                st.subheader("📅 Day-Level Spend Bifurcation (BSD 6–12 May)")
+                st.caption("How much to spend on PLA vs PCA each day.")
                 bw_combined = pd.concat(bw_parts, ignore_index=True) if len(bw_parts) > 1 else (bw_parts[0] if bw_parts else pd.DataFrame())
                 if not bw_combined.empty:
                     day_phasing_bw = compute_day_level_budgets(bw_combined, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
