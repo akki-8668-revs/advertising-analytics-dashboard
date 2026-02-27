@@ -28,7 +28,7 @@ except ImportError:
     HAS_DRIVE_API = False
 
 # BSD dates: 6-12 May (Fri to Thu)
-BSD_DAYS = ['Fri 06-Mar', 'Sat 07-Mar', 'Sun 08-Mar', 'Mon 09-Mar', 'Tue 10-Mar', 'Wed 11-Mar', 'Thu 12-Mar']
+BSD_DAYS = ['Fri 06-May', 'Sat 07-May', 'Sun 08-May', 'Mon 09-May', 'Tue 10-May', 'Wed 11-May', 'Thu 12-May']
 
 # BU-Super Category phasing (7 days: Fri-Sun)
 PHASING_DATA = {
@@ -74,7 +74,7 @@ DELIBERATION_CATEGORIES = ['AirConditioner', 'Refrigerator', 'HomeEntertainmentL
 URGENCY_MULT = [1.15, 1.10, 1.05, 0.85, 0.85, 0.90, 0.90]
 DELIB_MULT = [0.90, 0.95, 1.00, 1.15, 1.20, 1.05, 1.05]
 
-st.set_page_config(page_title="BSD Budget Optimizer", page_icon="💰", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Spend Pulse | BSD Budget Optimizer", page_icon="⚡", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
@@ -82,6 +82,14 @@ st.markdown("""
 .metric-card { background-color: #f0f2f6; padding: 0.8rem; border-radius: 8px; border-left: 4px solid #1f77b4; margin: 0.4rem 0; }
 .recommendation-box { background-color: #e8f4f8; padding: 0.8rem; border-radius: 8px; border-left: 4px solid #17becf; margin: 0.4rem 0; }
 .warning-box { background-color: #fff3cd; padding: 0.8rem; border-radius: 8px; border-left: 4px solid #ffc107; margin: 0.4rem 0; }
+.spend-pulse-box { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 1.25rem; border-radius: 12px; margin: 1rem 0; box-shadow: 0 4px 15px rgba(102,126,234,0.4); }
+.spend-pulse-box h3 { color: white !important; margin: 0 0 0.5rem 0 !important; font-size: 1.25rem !important; }
+.spend-pulse-box p { color: rgba(255,255,255,0.9) !important; margin: 0 0 1rem 0 !important; font-size: 0.9rem !important; }
+.spend-pulse-table { background: white; border-radius: 8px; padding: 1rem; overflow-x: auto; }
+.spend-pulse-table table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+.spend-pulse-table th { background: #667eea; color: white; padding: 0.6rem 0.8rem; text-align: left; border-radius: 6px 6px 0 0; }
+.spend-pulse-table td { padding: 0.5rem 0.8rem; border-bottom: 1px solid #eee; }
+.spend-pulse-table tr:hover { background: #f8f9ff; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -161,6 +169,10 @@ def _process_pla_df(df):
 def _process_pca_df(df):
     if 'day_date' in df.columns:
         df['day_date'] = pd.to_datetime(df['day_date'], format='%d-%m-%Y', errors='coerce')
+    if 'ad_spend' in df.columns and 'adspend' not in df.columns:
+        df['adspend'] = pd.to_numeric(df['ad_spend'], errors='coerce').fillna(0)
+    if 'view_count' in df.columns and 'viewcount' not in df.columns:
+        df['viewcount'] = pd.to_numeric(df['view_count'], errors='coerce').fillna(0)
     for col in ['viewcount', 'clicks', 'adspend', 'direct_units', 'indirect_units', 'ppv', 'direct_rev', 'indirect_rev']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
@@ -268,9 +280,10 @@ def compute_day_level_budgets(allocation_df, sel_bu, bu_col, sc_col, df_pla, df_
         if sel_bu != 'All':
             bu_val = sel_bu
         else:
-            src = df_pla if fmt == 'PLA' and df_pla is not None else df_pca
-            sc_col_src = ('analytic_super_category' if 'analytic_super_category' in (src.columns if src is not None else []) else 'super_category') if src is not None and not src.empty else sc_col
-            if src is not None and not src.empty and bu_col and bu_col in src.columns and sc_col_src in src.columns and 'brand' in src.columns:
+            src = df_pla if fmt == 'PLA' and df_pla is not None and not df_pla.empty else df_pca
+            src = src if src is not None and not src.empty else None
+            sc_col_src = ('analytic_super_category' if src is not None and 'analytic_super_category' in src.columns else 'super_category') if src is not None else sc_col
+            if src is not None and bu_col and bu_col in src.columns and sc_col_src in src.columns and 'brand' in src.columns:
                 match = src[(src['brand'].astype(str) == str(row.get('brand', ''))) & (src[sc_col_src].astype(str) == category)]
                 bu_val = str(match[bu_col].mode().iloc[0]) if not match.empty and not match[bu_col].dropna().empty else 'Electronics'
             else:
@@ -305,9 +318,10 @@ def expand_allocation_to_daily(allocation_df, sel_bu, bu_col, sc_col, df_pla, df
             if sel_bu != 'All':
                 bu_val = sel_bu
             else:
-                src = df_pla if fmt == 'PLA' and df_pla is not None else df_pca
-                sc_col_src = ('analytic_super_category' if 'analytic_super_category' in (src.columns if src is not None else []) else 'super_category') if src is not None and not src.empty else sc_col
-                if src is not None and not src.empty and bu_col and bu_col in src.columns and sc_col_src in src.columns:
+                src = df_pla if fmt == 'PLA' and df_pla is not None and not df_pla.empty else df_pca
+                src = src if src is not None and not src.empty else None
+                sc_col_src = ('analytic_super_category' if src is not None and 'analytic_super_category' in src.columns else 'super_category') if src is not None else sc_col
+                if src is not None and bu_col and bu_col in src.columns and sc_col_src in src.columns:
                     match = src[(src['brand'].astype(str) == str(row.get('brand', ''))) & (src[sc_col_src].astype(str) == category)]
                     bu_val = str(match[bu_col].mode().iloc[0]) if not match.empty and not match[bu_col].dropna().empty else 'Electronics'
                 else:
@@ -326,14 +340,25 @@ def expand_allocation_to_daily(allocation_df, sel_bu, bu_col, sc_col, df_pla, df
 
 # --- BUDGET OPTIMIZATION ---
 def optimize_budget(df, total_budget, data_type, kpi_col, group_cols_extra=None):
-    spend_col = 'spend' if data_type == 'pla' else 'adspend'
+    spend_col = 'spend' if data_type == 'pla' else ('adspend' if 'adspend' in df.columns else 'ad_spend')
     group_cols = ['brand', 'analytic_super_category'] if data_type == 'pla' else ['brand', 'super_category']
     if group_cols_extra:
         group_cols = group_cols + [c for c in group_cols_extra if c in df.columns]
     if kpi_col not in df.columns:
         kpi_col = 'Total_ROI'
-    agg_d = {spend_col: 'sum', 'Total_Revenue': 'sum', 'Total_Units': 'sum', kpi_col: 'mean'}
+    agg_d = {spend_col: 'sum', kpi_col: 'mean'}
+    if 'Total_Revenue' in df.columns:
+        agg_d['Total_Revenue'] = 'sum'
+    if 'Total_Units' in df.columns:
+        agg_d['Total_Units'] = 'sum'
+    group_cols = [c for c in group_cols if c in df.columns]
+    if not group_cols:
+        return pd.DataFrame()
     perf = df.groupby(group_cols).agg(agg_d).reset_index()
+    if 'Total_Revenue' not in perf.columns:
+        perf['Total_Revenue'] = 0
+    if 'Total_Units' not in perf.columns:
+        perf['Total_Units'] = 0
     perf['Efficiency_Score'] = perf[kpi_col] * np.log1p(perf[spend_col])
     perf['Efficiency_Score'] = perf['Efficiency_Score'].fillna(0)
     if perf['Efficiency_Score'].max() > 0:
@@ -347,7 +372,8 @@ def optimize_budget(df, total_budget, data_type, kpi_col, group_cols_extra=None)
 
 # --- MAIN ---
 def main():
-    st.markdown('<div class="main-header">💰 BSD Budget Optimizer</div>', unsafe_allow_html=True)
+    st.markdown('<p style="text-align:center;color:#888;font-size:0.75rem;margin-bottom:0.25rem;">For Internal Use Only</p>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">⚡ Spend Pulse — BSD Budget Optimizer</div>', unsafe_allow_html=True)
 
     pla_df = load_pla_data()
     pca_df = load_pca_data()
@@ -367,7 +393,7 @@ def main():
     if pca_df is not None and bu_col and bu_col in pca_df.columns:
         pca_df = pca_df[pca_df[bu_col].astype(str).str.strip().isin(allowed_bu)]
 
-    tab1, tab2 = st.tabs(["💰 Budget Optimizer", "🔄 Backward Budget Calculator"])
+    tab1, tab2 = st.tabs(["⚡ Budget Optimizer", "🔄 Backward Calculator"])
 
     # Build filter options from available data
     df_ref = pla_df if pla_df is not None else pca_df
@@ -380,11 +406,9 @@ def main():
 
     with st.sidebar.expander("📖 Where to click & what to find", expanded=False):
         st.markdown("""
-**Budget Optimizer tab**
-- Enter budget → Click **Optimize** → Find: metrics, **Day-Level Spend Bifurcation** table (PLA/PCA per day), allocation table, day-wise breakdown (expandable)
+**Budget Optimizer** — Enter budget → Click **Optimize** → Find: metrics, **Spend Pulse** (7-day PLA/PCA split), allocation table
 
-**Backward Budget Calculator tab**
-- Select KPI, enter target → Click **Calculate** → Find: required budget, PLA/PCA allocation, **Day-Level Spend Bifurcation** table, day-wise breakdown (expandable)
+**Backward Calculator** — Select KPI, enter target → Click **Calculate** → Find: required budget, **Spend Pulse** (7-day split)
         """)
     st.sidebar.subheader("Filters (Budget Optimizer)")
     sel_bu = st.sidebar.selectbox("BU", ['All'] + sorted(df_ref[bu_col_opt].dropna().astype(str).unique().tolist())) if bu_col_opt and bu_col_opt in df_ref.columns else 'All'
@@ -407,8 +431,7 @@ def main():
     pca_f = apply_filters(pca_df) if pca_df is not None else None
 
     with tab1:
-        st.subheader("Budget Optimizer (March BSD)")
-        st.subheader("For Internal Use Only")
+        st.subheader("Budget Optimizer (BSD 6–12 May)")
         st.caption("Uses full historical data. No date filter. Local filters: BU, Brand, Super Category.")
 
         total_budget = st.number_input("Total Budget (₹)", min_value=10000, max_value=10000000, value=100000, step=10000)
@@ -428,12 +451,16 @@ def main():
             results = []
             if pla_f is not None and not pla_f.empty and pla_budget > 0:
                 pla_res = optimize_budget(pla_f, pla_budget, 'pla', selected_kpi, ['page_context', 'slot_type'] if all(c in pla_f.columns for c in ['page_context', 'slot_type']) else None)
-                pla_res['Format'] = 'PLA'
-                results.append(pla_res)
+                if not pla_res.empty:
+                    pla_res = pla_res.copy()
+                    pla_res['Format'] = 'PLA'
+                    results.append(pla_res)
             if pca_f is not None and not pca_f.empty and pca_budget > 0:
                 pca_res = optimize_budget(pca_f, pca_budget, 'pca', selected_kpi)
-                pca_res['Format'] = 'PCA'
-                results.append(pca_res)
+                if not pca_res.empty:
+                    pca_res = pca_res.copy()
+                    pca_res['Format'] = 'PCA'
+                    results.append(pca_res)
 
             if not results:
                 st.warning("No allocation possible.")
@@ -449,9 +476,8 @@ def main():
             col2.metric("Expected Revenue", f"₹{total_rev:,.2f}")
             col3.metric("Expected ROI (Revenue/Spend)", f"{avg_roi:.2f}")
 
-            # Day-level spend bifurcation (primary output) - use markdown table so it always renders
-            st.subheader("📅 Day-Level Spend Bifurcation (BSD 6–12 May)")
-            st.caption("How much to spend on PLA vs PCA each day.")
+            # Day-level spend bifurcation (primary output)
+            st.markdown('<div class="spend-pulse-box"><h3>⚡ Spend Pulse — 7-Day Budget Split</h3><p>PLA vs PCA spend by day (BSD 6–12 May)</p></div>', unsafe_allow_html=True)
             combined_copy = combined.copy()
             if 'Format' not in combined_copy.columns:
                 combined_copy['Format'] = 'PLA'
@@ -466,7 +492,6 @@ def main():
                      'Total Spend (₹)': round((pla_tot + pca_tot) * pct[i], 2), 'PLA %': '50%', 'PCA %': '50%'}
                     for i, d in enumerate(BSD_DAYS)
                 ])
-            # Render as markdown table - guaranteed to display
             md = "| Day | PLA Spend (₹) | PCA Spend (₹) | Total Spend (₹) | PLA % | PCA % |\n|-----|---------------|---------------|-----------------|-------|-------|\n"
             for _, r in day_phasing_df.iterrows():
                 md += f"| {r['Day']} | {r['PLA Spend (₹)']:,.2f} | {r['PCA Spend (₹)']:,.2f} | {r['Total Spend (₹)']:,.2f} | {r['PLA %']} | {r['PCA %']} |\n"
@@ -579,8 +604,7 @@ def main():
                     st.dataframe(disp_pca.round(2), use_container_width=True, hide_index=True)
 
                 # Day-level spend bifurcation for Backward Calculator
-                st.subheader("📅 Day-Level Spend Bifurcation (BSD 6–12 May)")
-                st.caption("How much to spend on PLA vs PCA each day.")
+                st.markdown('<div class="spend-pulse-box"><h3>⚡ Spend Pulse — 7-Day Budget Split</h3><p>PLA vs PCA spend by day (BSD 6–12 May)</p></div>', unsafe_allow_html=True)
                 bw_combined = pd.concat(bw_parts, ignore_index=True) if len(bw_parts) > 1 else (bw_parts[0] if bw_parts else pd.DataFrame())
                 if not bw_combined.empty:
                     try:
