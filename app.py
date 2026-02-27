@@ -27,8 +27,8 @@ try:
 except ImportError:
     HAS_DRIVE_API = False
 
-# BSD dates: 6-12 May (Fri to Thu)
-BSD_DAYS = ['Fri 06-May', 'Sat 07-May', 'Sun 08-May', 'Mon 09-May', 'Tue 10-May', 'Wed 11-May', 'Thu 12-May']
+# BSD dates: 6-12 March (Fri to Thu)
+BSD_DAYS = ['Fri 06-Mar', 'Sat 07-Mar', 'Sun 08-Mar', 'Mon 09-Mar', 'Tue 10-Mar', 'Wed 11-Mar', 'Thu 12-Mar']
 
 # BU-Super Category phasing (7 days: Fri-Sun)
 PHASING_DATA = {
@@ -431,7 +431,7 @@ def main():
     pca_f = apply_filters(pca_df) if pca_df is not None else None
 
     with tab1:
-        st.subheader("Budget Optimizer (BSD 6–12 May)")
+        st.subheader("Budget Optimizer (BSD 6–12 March)")
         st.caption("Uses full historical data. No date filter. Local filters: BU, Brand, Super Category.")
 
         total_budget = st.number_input("Total Budget (₹)", min_value=10000, max_value=10000000, value=100000, step=10000)
@@ -477,7 +477,7 @@ def main():
             col3.metric("Expected ROI (Revenue/Spend)", f"{avg_roi:.2f}")
 
             # Day-level spend bifurcation (primary output)
-            st.markdown('<div class="spend-pulse-box"><h3>⚡ Spend Pulse — 7-Day Budget Split</h3><p>PLA vs PCA spend by day (BSD 6–12 May)</p></div>', unsafe_allow_html=True)
+            st.markdown('<div class="spend-pulse-box"><h3>⚡ Spend Pulse — 7-Day Budget Split</h3><p>PLA vs PCA spend by day (BSD 6–12 March)</p></div>', unsafe_allow_html=True)
             combined_copy = combined.copy()
             if 'Format' not in combined_copy.columns:
                 combined_copy['Format'] = 'PLA'
@@ -492,10 +492,7 @@ def main():
                      'Total Spend (₹)': round((pla_tot + pca_tot) * pct[i], 2), 'PLA %': '50%', 'PCA %': '50%'}
                     for i, d in enumerate(BSD_DAYS)
                 ])
-            md = "| Day | PLA Spend (₹) | PCA Spend (₹) | Total Spend (₹) | PLA % | PCA % |\n|-----|---------------|---------------|-----------------|-------|-------|\n"
-            for _, r in day_phasing_df.iterrows():
-                md += f"| {r['Day']} | {r['PLA Spend (₹)']:,.2f} | {r['PCA Spend (₹)']:,.2f} | {r['Total Spend (₹)']:,.2f} | {r['PLA %']} | {r['PCA %']} |\n"
-            st.markdown(md)
+            st.dataframe(day_phasing_df, use_container_width=True, hide_index=True)
 
             cat_col = 'analytic_super_category' if 'analytic_super_category' in combined.columns else 'super_category'
             base_cols = ['Format', 'brand', cat_col]
@@ -604,7 +601,7 @@ def main():
                     st.dataframe(disp_pca.round(2), use_container_width=True, hide_index=True)
 
                 # Day-level spend bifurcation for Backward Calculator
-                st.markdown('<div class="spend-pulse-box"><h3>⚡ Spend Pulse — 7-Day Budget Split</h3><p>PLA vs PCA spend by day (BSD 6–12 May)</p></div>', unsafe_allow_html=True)
+                st.markdown('<div class="spend-pulse-box"><h3>⚡ Spend Pulse — 7-Day Budget Split</h3><p>PLA vs PCA spend by day (BSD 6–12 March)</p></div>', unsafe_allow_html=True)
                 bw_combined = pd.concat(bw_parts, ignore_index=True) if len(bw_parts) > 1 else (bw_parts[0] if bw_parts else pd.DataFrame())
                 if not bw_combined.empty:
                     try:
@@ -618,10 +615,7 @@ def main():
                              'Total Spend (₹)': round((pla_tot + pca_tot) * pct[i], 2), 'PLA %': '50%', 'PCA %': '50%'}
                             for i, d in enumerate(BSD_DAYS)
                         ])
-                    md_bw = "| Day | PLA Spend (₹) | PCA Spend (₹) | Total Spend (₹) | PLA % | PCA % |\n|-----|---------------|---------------|-----------------|-------|-------|\n"
-                    for _, r in day_phasing_bw.iterrows():
-                        md_bw += f"| {r['Day']} | {r['PLA Spend (₹)']:,.2f} | {r['PCA Spend (₹)']:,.2f} | {r['Total Spend (₹)']:,.2f} | {r['PLA %']} | {r['PCA %']} |\n"
-                    st.markdown(md_bw)
+                    st.dataframe(day_phasing_bw, use_container_width=True, hide_index=True)
                     daily_bw = expand_allocation_to_daily(bw_combined, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
                     with st.expander("📋 Day-wise PLA/PCA allocation (by page context & slot)", expanded=True):
                         for i, day_name in enumerate(BSD_DAYS):
