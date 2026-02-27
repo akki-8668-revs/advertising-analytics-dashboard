@@ -76,23 +76,6 @@ DELIB_MULT = [0.90, 0.95, 1.00, 1.15, 1.20, 1.05, 1.05]
 
 st.set_page_config(page_title="Spend Pulse | BSD Budget Optimizer", page_icon="⚡", layout="wide", initial_sidebar_state="expanded")
 
-st.markdown("""
-<style>
-.main-header { font-size: 2rem; font-weight: bold; color: #1f77b4; text-align: center; margin-bottom: 1.5rem; }
-.metric-card { background-color: #f0f2f6; padding: 0.8rem; border-radius: 8px; border-left: 4px solid #1f77b4; margin: 0.4rem 0; }
-.recommendation-box { background-color: #e8f4f8; padding: 0.8rem; border-radius: 8px; border-left: 4px solid #17becf; margin: 0.4rem 0; }
-.warning-box { background-color: #fff3cd; padding: 0.8rem; border-radius: 8px; border-left: 4px solid #ffc107; margin: 0.4rem 0; }
-.spend-pulse-box { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 1.25rem; border-radius: 12px; margin: 1rem 0; box-shadow: 0 4px 15px rgba(102,126,234,0.4); }
-.spend-pulse-box h3 { color: white !important; margin: 0 0 0.5rem 0 !important; font-size: 1.25rem !important; }
-.spend-pulse-box p { color: rgba(255,255,255,0.9) !important; margin: 0 0 1rem 0 !important; font-size: 0.9rem !important; }
-.spend-pulse-table { background: white; border-radius: 8px; padding: 1rem; overflow-x: auto; }
-.spend-pulse-table table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
-.spend-pulse-table th { background: #667eea; color: white; padding: 0.6rem 0.8rem; text-align: left; border-radius: 6px 6px 0 0; }
-.spend-pulse-table td { padding: 0.5rem 0.8rem; border-bottom: 1px solid #eee; }
-.spend-pulse-table tr:hover { background: #f8f9ff; }
-</style>
-""", unsafe_allow_html=True)
-
 # --- DATA LOADING ---
 def _load_from_drive_api_by_name(folder_id, name_patterns):
     if not HAS_DRIVE_API:
@@ -363,6 +346,9 @@ def optimize_budget(df, total_budget, data_type, kpi_col, group_cols_extra=None)
     if kpi_col not in df.columns:
         kpi_col = 'Total_ROI'
     agg_d = {spend_col: 'sum', kpi_col: 'mean'}
+    for m in ['Total_ROI', 'Direct_ROI', 'Indirect_ROI', 'CTR', 'Direct_CVR', 'Indirect_CVR']:
+        if m in df.columns and m not in agg_d:
+            agg_d[m] = 'mean'
     if 'Total_Revenue' in df.columns:
         agg_d['Total_Revenue'] = 'sum'
     if 'Total_Units' in df.columns:
@@ -395,8 +381,8 @@ def main():
         st.stop()
 
 def _main():
-    st.markdown('<p style="text-align:center;color:#888;font-size:0.75rem;margin-bottom:0.25rem;">For Internal Use Only</p>', unsafe_allow_html=True)
-    st.markdown('<div class="main-header">⚡ Spend Pulse — BSD Budget Optimizer</div>', unsafe_allow_html=True)
+    st.caption("For Internal Use Only")
+    st.title("Spend Pulse — BSD Budget Optimizer")
 
     pla_df = load_pla_data()
     pca_df = load_pca_data()
@@ -416,8 +402,6 @@ def _main():
     if pca_df is not None and bu_col and bu_col in pca_df.columns:
         pca_df = pca_df[pca_df[bu_col].astype(str).str.strip().isin(allowed_bu)]
 
-    tab1, tab2, tab3 = st.tabs(["⚡ Budget Optimizer", "🔄 Backward Calculator", "📅 Day-Level Split"])
-
     # Build filter options from available data
     df_ref = pla_df if pla_df is not None else pca_df
     if df_ref is None:
@@ -429,11 +413,9 @@ def _main():
 
     with st.sidebar.expander("📖 Where to click & what to find", expanded=False):
         st.markdown("""
-**Budget Optimizer** — Enter budget → Click **Optimize** → allocation table
+**Budget Optimizer** — Enter budget → Click **Optimize** → metrics, allocation, day-level split (at end)
 
-**Backward Calculator** — Select KPI, enter target → Click **Calculate** → required budget, allocation
-
-**Day-Level Split** — 7-day PLA/PCA spend (from Budget Optimizer or Backward Calculator)
+**Backward Calculator** — Select KPI, enter target → Click **Calculate** → budget, allocation, day-level split (at end)
         """)
     st.sidebar.subheader("Filters (Budget Optimizer)")
     sel_bu = st.sidebar.selectbox("BU", ['All'] + sorted(df_ref[bu_col_opt].dropna().astype(str).unique().tolist())) if bu_col_opt and bu_col_opt in df_ref.columns else 'All'
@@ -455,24 +437,22 @@ def _main():
     pla_f = apply_filters(pla_df) if pla_df is not None else None
     pca_f = apply_filters(pca_df) if pca_df is not None else None
 
-    with tab1:
-        st.subheader("Budget Optimizer (BSD 6–12 March)")
-        st.caption("Uses full historical data. No date filter. Local filters: BU, Brand, Super Category.")
+    st.subheader("Budget Optimizer (BSD 6–12 March)")
+    st.caption("Uses full historical data. No date filter. Local filters: BU, Brand, Super Category.")
 
-        total_budget = st.number_input("Total Budget (₹)", min_value=10000, max_value=10000000, value=100000, step=10000)
-        kpi_options = [c for c in ['Total_ROI', 'Direct_ROI', 'Indirect_ROI', 'CTR', 'Direct_CVR', 'Indirect_CVR'] if c in df_ref.columns]
-        selected_kpi = st.selectbox("Optimize for KPI", kpi_options or ['Total_ROI'])
+    total_budget = st.number_input("Total Budget (₹)", min_value=10000, max_value=10000000, value=100000, step=10000)
+    kpi_options = [c for c in ['Total_ROI', 'Direct_ROI', 'Indirect_ROI', 'CTR', 'Direct_CVR', 'Indirect_CVR'] if c in df_ref.columns]
+    selected_kpi = st.selectbox("Optimize for KPI", kpi_options or ['Total_ROI'])
 
-        # PLA/PCA split by historical spend ratio
-        pla_hist = pla_f['spend'].sum() if pla_f is not None and not pla_f.empty and 'spend' in pla_f.columns else 0
-        pca_hist = pca_f['adspend'].sum() if pca_f is not None and not pca_f.empty and 'adspend' in pca_f.columns else 0
-        tot_hist = pla_hist + pca_hist
-        pla_share = pla_hist / tot_hist if tot_hist > 0 else 0.5
-        pca_share = 1.0 - pla_share
-        pla_budget = total_budget * pla_share
-        pca_budget = total_budget * pca_share
+    pla_hist = pla_f['spend'].sum() if pla_f is not None and not pla_f.empty and 'spend' in pla_f.columns else 0
+    pca_hist = pca_f['adspend'].sum() if pca_f is not None and not pca_f.empty and 'adspend' in pca_f.columns else 0
+    tot_hist = pla_hist + pca_hist
+    pla_share = pla_hist / tot_hist if tot_hist > 0 else 0.5
+    pca_share = 1.0 - pla_share
+    pla_budget = total_budget * pla_share
+    pca_budget = total_budget * pca_share
 
-        if st.button("🚀 Optimize"):
+    if st.button("🚀 Optimize"):
             results = []
             if pla_f is not None and not pla_f.empty and pla_budget > 0:
                 pla_res = optimize_budget(pla_f, pla_budget, 'pla', selected_kpi, ['page_context', 'slot_type'] if all(c in pla_f.columns for c in ['page_context', 'slot_type']) else None)
@@ -494,22 +474,24 @@ def _main():
             combined = pd.concat(results, ignore_index=True)
             total_rec = combined['Recommended_Budget'].sum()
             total_rev = combined['Expected_Revenue'].sum()
-            avg_roi = total_rev / total_rec if total_rec > 0 else 0
-
+            total_rec_safe = total_rec if total_rec > 0 else 1
+            def _exp(m): return (combined[m] * combined['Recommended_Budget']).sum() / total_rec_safe if m in combined.columns else 0
+            exp_roi = total_rev / total_rec_safe
+            exp_ctr = _exp('CTR')
+            exp_dcvr = _exp('Direct_CVR')
+            exp_icvr = _exp('Indirect_CVR')
             col1, col2, col3 = st.columns(3)
             col1.metric("Total Recommended Budget", f"₹{total_rec:,.2f}")
             col2.metric("Expected Revenue", f"₹{total_rev:,.2f}")
-            col3.metric("Expected ROI (Revenue/Spend)", f"{avg_roi:.2f}")
+            col3.metric("Expected ROI", f"{exp_roi:.2f}")
+            col4, col5, col6 = st.columns(3)
+            col4.metric("Expected CTR", f"{exp_ctr*100:.2f}%")
+            col5.metric("Expected Direct CVR", f"{exp_dcvr*100:.4f}%")
+            col6.metric("Expected Indirect CVR", f"{exp_icvr*100:.4f}%")
 
             combined_copy = combined.copy()
             if 'Format' not in combined_copy.columns:
                 combined_copy['Format'] = 'PLA'
-            day_phasing_df = compute_day_level_budgets(combined_copy, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
-            try:
-                st.session_state['day_level_optimizer'] = day_phasing_df.copy()
-            except Exception:
-                pass
-
             cat_col = 'analytic_super_category' if 'analytic_super_category' in combined.columns else 'super_category'
             base_cols = ['Format', 'brand', cat_col]
             if 'page_context' in combined.columns:
@@ -517,9 +499,19 @@ def _main():
             if 'slot_type' in combined.columns:
                 base_cols.append('slot_type')
             base_cols += ['Recommended_Budget', 'Expected_Revenue', 'Expected_ROI', 'Efficiency_Score']
+            for m in ['CTR', 'Direct_CVR', 'Indirect_CVR']:
+                if m in combined.columns and m not in base_cols:
+                    base_cols.append(m)
             disp = combined[[c for c in base_cols if c in combined.columns]].copy()
-            disp = disp.rename(columns={'brand': 'Brand', cat_col: 'Category', 'page_context': 'Page Context', 'slot_type': 'Slot Type',
-                                       'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'})
+            for m in ['CTR', 'Direct_CVR', 'Indirect_CVR']:
+                if m in disp.columns:
+                    disp[m] = (disp[m] * 100).round(4).astype(str) + '%'
+            rename_map = {'brand': 'Brand', cat_col: 'Category', 'page_context': 'Page Context', 'slot_type': 'Slot Type',
+                         'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'}
+            for m, lbl in [('CTR', 'CTR %'), ('Direct_CVR', 'Direct CVR %'), ('Indirect_CVR', 'Indirect CVR %')]:
+                if m in disp.columns:
+                    rename_map[m] = lbl
+            disp = disp.rename(columns=rename_map)
             st.dataframe(disp.round(2), use_container_width=True)
 
             try:
@@ -531,134 +523,116 @@ def _main():
                             st.dataframe(daily_tables[i], use_container_width=True, hide_index=True)
             except Exception:
                 pass
+            try:
+                with st.spinner("Calculating 7-day split..."):
+                    day_phasing_df = compute_day_level_budgets(combined_copy, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
+                st.subheader("Day-Level Split (BSD 6–12 March)")
+                st.caption("PLA vs PCA spend by day (BU–Super Category phasing)")
+                st.dataframe(day_phasing_df, use_container_width=True, hide_index=True)
+            except Exception as e:
+                st.warning(f"Could not compute day-level split: {e}")
 
-    with tab2:
-        st.subheader("🔄 Backward Budget Calculator")
-        st.caption("Enter a KPI and target value → get required PLA (page context, slot) and PCA budget.")
+    st.subheader("Backward Budget Calculator")
+    st.caption("Enter a KPI and target value → get required PLA (page context, slot) and PCA budget.")
 
-        kpi_bw = st.selectbox("Select KPI", ['Total_ROI', 'Direct_ROI', 'Indirect_ROI', 'Total_Revenue', 'Total_Units', 'Direct_CVR', 'Indirect_CVR'], key='bw_kpi')
-        target_value = st.number_input("Target Value", min_value=0.0, value=2.0, step=0.1, format="%.2f", key='bw_target',
-                                       help="ROI: target ROI | Revenue: ₹ | Units: count | CVR: units per ₹ spend")
-        target_revenue = 500000
-        target_units_cvr = 100
+    kpi_bw = st.selectbox("Select KPI", ['Total_ROI', 'Direct_ROI', 'Indirect_ROI', 'Total_Revenue', 'Total_Units', 'Direct_CVR', 'Indirect_CVR'], key='bw_kpi')
+    target_value = st.number_input("Target Value", min_value=0.0, value=2.0, step=0.1, format="%.2f", key='bw_target',
+                                   help="ROI: target ROI | Revenue: ₹ | Units: count | CVR: units per ₹ spend")
+    target_revenue = 500000
+    target_units_cvr = 100
+    if kpi_bw in ['Total_ROI', 'Direct_ROI', 'Indirect_ROI']:
+        target_revenue = st.number_input("Target Revenue (₹) - required for ROI calc", min_value=0, value=500000, step=10000, key='bw_rev')
+        st.caption("Budget = Target Revenue / Target ROI")
+    if kpi_bw in ['Direct_CVR', 'Indirect_CVR']:
+        target_units_cvr = st.number_input("Target Units (for CVR calc)", min_value=0, value=100, key='bw_units')
+        st.caption("Budget = Target Units / Target CVR")
+
+    if st.button("🔄 Calculate Required Budget", key='bw_btn'):
+        pla_hist_spend = pla_f['spend'].sum() if pla_f is not None and not pla_f.empty and 'spend' in pla_f.columns else 0
+        pca_hist_spend = pca_f['adspend'].sum() if pca_f is not None and not pca_f.empty and 'adspend' in pca_f.columns else 0
+        pla_hist_rev = pla_f['Total_Revenue'].sum() if pla_f is not None and not pla_f.empty else 0
+        pca_hist_rev = pca_f['Total_Revenue'].sum() if pca_f is not None and not pca_f.empty else 0
+        pla_hist_units = pla_f['Total_Units'].sum() if pla_f is not None and not pla_f.empty else 0
+        pca_hist_units = pca_f['Total_Units'].sum() if pca_f is not None and not pca_f.empty else 0
+
+        total_budget_req = 0
         if kpi_bw in ['Total_ROI', 'Direct_ROI', 'Indirect_ROI']:
-            target_revenue = st.number_input("Target Revenue (₹) - required for ROI calc", min_value=0, value=500000, step=10000, key='bw_rev')
-            st.caption("Budget = Target Revenue / Target ROI")
-        if kpi_bw in ['Direct_CVR', 'Indirect_CVR']:
-            target_units_cvr = st.number_input("Target Units (for CVR calc)", min_value=0, value=100, key='bw_units')
-            st.caption("Budget = Target Units / Target CVR")
-
-        if st.button("🔄 Calculate Required Budget", key='bw_btn'):
-            pla_hist_spend = pla_f['spend'].sum() if pla_f is not None and not pla_f.empty and 'spend' in pla_f.columns else 0
-            pca_hist_spend = pca_f['adspend'].sum() if pca_f is not None and not pca_f.empty and 'adspend' in pca_f.columns else 0
-            pla_hist_rev = pla_f['Total_Revenue'].sum() if pla_f is not None and not pla_f.empty else 0
-            pca_hist_rev = pca_f['Total_Revenue'].sum() if pca_f is not None and not pca_f.empty else 0
-            pla_hist_units = pla_f['Total_Units'].sum() if pla_f is not None and not pla_f.empty else 0
-            pca_hist_units = pca_f['Total_Units'].sum() if pca_f is not None and not pca_f.empty else 0
-
-            total_budget_req = 0
-            if kpi_bw in ['Total_ROI', 'Direct_ROI', 'Indirect_ROI']:
-                if target_value <= 0:
-                    st.error("Target ROI must be > 0")
-                    total_budget_req = 0
-                else:
-                    total_budget_req = target_revenue / target_value
-            elif kpi_bw == 'Total_Revenue':
-                hist_roi = (pla_hist_rev + pca_hist_rev) / (pla_hist_spend + pca_hist_spend) if (pla_hist_spend + pca_hist_spend) > 0 else 0
-                total_budget_req = target_value / hist_roi if hist_roi > 0 else 0
-            elif kpi_bw == 'Total_Units':
-                hist_cvr = (pla_hist_units + pca_hist_units) / (pla_hist_spend + pca_hist_spend) if (pla_hist_spend + pca_hist_spend) > 0 else 0
-                total_budget_req = target_value / hist_cvr if hist_cvr > 0 else 0
-            elif kpi_bw in ['Direct_CVR', 'Indirect_CVR']:
-                total_budget_req = target_units_cvr / target_value if target_value > 0 else 0
-
-            if total_budget_req <= 0:
-                st.warning("Could not compute budget. Check inputs.")
+            if target_value <= 0:
+                st.error("Target ROI must be > 0")
+                total_budget_req = 0
             else:
-                tot_hist = pla_hist_spend + pca_hist_spend
-                pla_share = pla_hist_spend / tot_hist if tot_hist > 0 else 0.5
-                pca_share = 1.0 - pla_share
-                pla_budget_req = total_budget_req * pla_share
-                pca_budget_req = total_budget_req * pca_share
+                total_budget_req = target_revenue / target_value
+        elif kpi_bw == 'Total_Revenue':
+            hist_roi = (pla_hist_rev + pca_hist_rev) / (pla_hist_spend + pca_hist_spend) if (pla_hist_spend + pca_hist_spend) > 0 else 0
+            total_budget_req = target_value / hist_roi if hist_roi > 0 else 0
+        elif kpi_bw == 'Total_Units':
+            hist_cvr = (pla_hist_units + pca_hist_units) / (pla_hist_spend + pca_hist_spend) if (pla_hist_spend + pca_hist_spend) > 0 else 0
+            total_budget_req = target_value / hist_cvr if hist_cvr > 0 else 0
+        elif kpi_bw in ['Direct_CVR', 'Indirect_CVR']:
+            total_budget_req = target_units_cvr / target_value if target_value > 0 else 0
 
-                st.success(f"**Total Budget Required: ₹{total_budget_req:,.2f}**")
-                col1, col2 = st.columns(2)
-                col1.metric("PLA Budget Required", f"₹{pla_budget_req:,.2f}")
-                col2.metric("PCA Budget Required", f"₹{pca_budget_req:,.2f}")
+        if total_budget_req <= 0:
+            st.warning("Could not compute budget. Check inputs.")
+        else:
+            tot_hist = pla_hist_spend + pca_hist_spend
+            pla_share = pla_hist_spend / tot_hist if tot_hist > 0 else 0.5
+            pca_share = 1.0 - pla_share
+            pla_budget_req = total_budget_req * pla_share
+            pca_budget_req = total_budget_req * pca_share
 
-                bw_parts = []
-                if pla_f is not None and not pla_f.empty and pla_budget_req > 0:
-                    st.subheader("PLA Budget Allocation (by Page Context & Slot)")
-                    kpi_for_alloc = kpi_bw if kpi_bw in pla_f.columns else 'Total_ROI'
-                    pla_res_bw = optimize_budget(pla_f, pla_budget_req, 'pla', kpi_for_alloc,
-                                                 ['page_context', 'slot_type'] if all(c in pla_f.columns for c in ['page_context', 'slot_type']) else None)
-                    bw_parts.append(pla_res_bw.assign(Format='PLA'))
-                    cat_col = 'analytic_super_category' if 'analytic_super_category' in pla_res_bw.columns else 'super_category'
-                    cols = ['Format', 'brand', cat_col, 'Recommended_Budget', 'Expected_Revenue', 'Expected_ROI', 'Efficiency_Score']
-                    if 'page_context' in pla_res_bw.columns:
-                        cols.insert(4, 'page_context')
-                    if 'slot_type' in pla_res_bw.columns:
-                        cols.insert(5, 'slot_type')
-                    cols = [c for c in cols if c in pla_res_bw.columns]
-                    disp_pla = pla_res_bw[[c for c in cols if c in pla_res_bw.columns]].copy()
-                    disp_pla = disp_pla.rename(columns={'brand': 'Brand', cat_col: 'Category', 'page_context': 'Page Context', 'slot_type': 'Slot Type',
-                                                       'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'})
-                    st.dataframe(disp_pla.round(2), use_container_width=True, hide_index=True)
+            st.success(f"**Total Budget Required: ₹{total_budget_req:,.2f}**")
+            col1, col2 = st.columns(2)
+            col1.metric("PLA Budget Required", f"₹{pla_budget_req:,.2f}")
+            col2.metric("PCA Budget Required", f"₹{pca_budget_req:,.2f}")
 
-                if pca_f is not None and not pca_f.empty and pca_budget_req > 0:
-                    st.subheader("PCA Budget Allocation")
-                    kpi_pca = kpi_bw if kpi_bw in pca_f.columns else 'Total_ROI'
-                    pca_res_bw = optimize_budget(pca_f, pca_budget_req, 'pca', kpi_pca)
-                    bw_parts.append(pca_res_bw.assign(Format='PCA'))
-                    cat_col = 'super_category' if 'super_category' in pca_res_bw.columns else 'analytic_super_category'
-                    disp_pca = pca_res_bw[['Format', 'brand', cat_col, 'Recommended_Budget', 'Expected_Revenue', 'Expected_ROI', 'Efficiency_Score']].copy()
-                    disp_pca = disp_pca.rename(columns={'brand': 'Brand', cat_col: 'Category', 'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'})
-                    st.dataframe(disp_pca.round(2), use_container_width=True, hide_index=True)
+            bw_parts = []
+            if pla_f is not None and not pla_f.empty and pla_budget_req > 0:
+                st.subheader("PLA Budget Allocation (by Page Context & Slot)")
+                kpi_for_alloc = kpi_bw if kpi_bw in pla_f.columns else 'Total_ROI'
+                pla_res_bw = optimize_budget(pla_f, pla_budget_req, 'pla', kpi_for_alloc,
+                                             ['page_context', 'slot_type'] if all(c in pla_f.columns for c in ['page_context', 'slot_type']) else None)
+                bw_parts.append(pla_res_bw.assign(Format='PLA'))
+                cat_col = 'analytic_super_category' if 'analytic_super_category' in pla_res_bw.columns else 'super_category'
+                cols = ['Format', 'brand', cat_col, 'Recommended_Budget', 'Expected_Revenue', 'Expected_ROI', 'Efficiency_Score']
+                if 'page_context' in pla_res_bw.columns:
+                    cols.insert(4, 'page_context')
+                if 'slot_type' in pla_res_bw.columns:
+                    cols.insert(5, 'slot_type')
+                cols = [c for c in cols if c in pla_res_bw.columns]
+                disp_pla = pla_res_bw[[c for c in cols if c in pla_res_bw.columns]].copy()
+                disp_pla = disp_pla.rename(columns={'brand': 'Brand', cat_col: 'Category', 'page_context': 'Page Context', 'slot_type': 'Slot Type',
+                                                   'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'})
+                st.dataframe(disp_pla.round(2), use_container_width=True, hide_index=True)
 
-                bw_combined = pd.concat(bw_parts, ignore_index=True) if len(bw_parts) > 1 else (bw_parts[0] if bw_parts else pd.DataFrame())
-                if not bw_combined.empty:
-                    day_phasing_bw = compute_day_level_budgets(bw_combined, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
-                    try:
-                        st.session_state['day_level_backward'] = day_phasing_bw.copy()
-                    except Exception:
-                        pass
-                    try:
-                        daily_bw = expand_allocation_to_daily(bw_combined, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
-                        with st.expander("📋 Day-wise PLA/PCA allocation (by page context & slot)", expanded=False):
-                            for i, day_name in enumerate(BSD_DAYS):
-                                if i < len(daily_bw) and not daily_bw[i].empty:
-                                    st.markdown(f"**{day_name}**")
-                                    st.dataframe(daily_bw[i], use_container_width=True, hide_index=True)
-                    except Exception:
-                        pass
+            if pca_f is not None and not pca_f.empty and pca_budget_req > 0:
+                st.subheader("PCA Budget Allocation")
+                kpi_pca = kpi_bw if kpi_bw in pca_f.columns else 'Total_ROI'
+                pca_res_bw = optimize_budget(pca_f, pca_budget_req, 'pca', kpi_pca)
+                bw_parts.append(pca_res_bw.assign(Format='PCA'))
+                cat_col = 'super_category' if 'super_category' in pca_res_bw.columns else 'analytic_super_category'
+                disp_pca = pca_res_bw[['Format', 'brand', cat_col, 'Recommended_Budget', 'Expected_Revenue', 'Expected_ROI', 'Efficiency_Score']].copy()
+                disp_pca = disp_pca.rename(columns={'brand': 'Brand', cat_col: 'Category', 'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'})
+                st.dataframe(disp_pca.round(2), use_container_width=True, hide_index=True)
 
-    with tab3:
-        st.subheader("📅 Day-Level Split (BSD 6–12 March)")
-        st.caption("7-day PLA vs PCA spend using BU–Super Category phasing curves. Run Budget Optimizer or Backward Calculator first.")
-        st.markdown('<div class="spend-pulse-box"><h3>⚡ Spend Pulse — 7-Day Budget Split</h3><p>Uses BU–Super Category traffic curves (urgency vs deliberation)</p></div>', unsafe_allow_html=True)
-        has_data = False
-        try:
-            if 'day_level_optimizer' in st.session_state:
-                df_opt = st.session_state['day_level_optimizer']
-                if isinstance(df_opt, pd.DataFrame) and not df_opt.empty:
-                    st.markdown("**From Budget Optimizer**")
-                    st.dataframe(df_opt, use_container_width=True, hide_index=True)
-                    has_data = True
-        except Exception:
-            pass
-        try:
-            if 'day_level_backward' in st.session_state:
-                df_bw = st.session_state['day_level_backward']
-                if isinstance(df_bw, pd.DataFrame) and not df_bw.empty:
-                    if has_data:
-                        st.divider()
-                    st.markdown("**From Backward Calculator**")
-                    st.dataframe(df_bw, use_container_width=True, hide_index=True)
-                    has_data = True
-        except Exception:
-            pass
-        if not has_data:
-            st.info("No day-level data yet. Click **Optimize** in Budget Optimizer or **Calculate** in Backward Calculator first.")
+            bw_combined = pd.concat(bw_parts, ignore_index=True) if len(bw_parts) > 1 else (bw_parts[0] if bw_parts else pd.DataFrame())
+            if not bw_combined.empty:
+                try:
+                    daily_bw = expand_allocation_to_daily(bw_combined, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
+                    with st.expander("📋 Day-wise PLA/PCA allocation (by page context & slot)", expanded=False):
+                        for i, day_name in enumerate(BSD_DAYS):
+                            if i < len(daily_bw) and not daily_bw[i].empty:
+                                st.markdown(f"**{day_name}**")
+                                st.dataframe(daily_bw[i], use_container_width=True, hide_index=True)
+                except Exception:
+                    pass
+                try:
+                    with st.spinner("Calculating 7-day split..."):
+                        day_phasing_bw = compute_day_level_budgets(bw_combined, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
+                    st.subheader("Day-Level Split (BSD 6–12 March)")
+                    st.caption("PLA vs PCA spend by day (BU–Super Category phasing)")
+                    st.dataframe(day_phasing_bw, use_container_width=True, hide_index=True)
+                except Exception as e:
+                    st.warning(f"Could not compute day-level split: {e}")
 
 if __name__ == "__main__":
     main()
