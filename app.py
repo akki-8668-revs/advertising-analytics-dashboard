@@ -482,6 +482,15 @@ def _main():
                 exp_ctr = _exp('CTR')
                 exp_dcvr = _exp('Direct_CVR')
                 exp_icvr = _exp('Indirect_CVR')
+                # Unified efficiency: show the best (max) efficiency score across formats for the same category/context
+                cat_col = 'analytic_super_category' if 'analytic_super_category' in combined.columns else 'super_category'
+                group_cols_for_eff = [cat_col] if cat_col in combined.columns else []
+                if 'page_context' in combined.columns:
+                    group_cols_for_eff.append('page_context')
+                if 'slot_type' in combined.columns:
+                    group_cols_for_eff.append('slot_type')
+                if group_cols_for_eff:
+                    combined['Efficiency_Score'] = combined.groupby(group_cols_for_eff)['Efficiency_Score'].transform('max')
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Total Recommended Budget", f"₹{total_rec:,.2f}")
                 col2.metric("Expected Revenue", f"₹{total_rev:,.2f}")
@@ -519,7 +528,7 @@ def _main():
 
                 try:
                     daily_tables = expand_allocation_to_daily(combined_copy, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
-                    with st.expander("📋 Day-wise PLA/PCA allocation (by page context & slot)", expanded=False):
+                    with st.expander("📋 Day-wise PLA/PCA allocation (by page context & slot)", expanded=True):
                         for i, day_name in enumerate(BSD_DAYS):
                             if i < len(daily_tables) and not daily_tables[i].empty:
                                 df_day = daily_tables[i]
@@ -633,10 +642,20 @@ def _main():
                     st.dataframe(disp_pca.round(2).fillna(''), use_container_width=True, hide_index=True)
 
                 bw_combined = pd.concat(bw_parts, ignore_index=True) if len(bw_parts) > 1 else (bw_parts[0] if bw_parts else pd.DataFrame())
+                # Unified efficiency for backward results: show max efficiency across same category/context
+                if not bw_combined.empty:
+                    cat_col_bw = 'analytic_super_category' if 'analytic_super_category' in bw_combined.columns else 'super_category'
+                    group_cols_eff_bw = [cat_col_bw] if cat_col_bw in bw_combined.columns else []
+                    if 'page_context' in bw_combined.columns:
+                        group_cols_eff_bw.append('page_context')
+                    if 'slot_type' in bw_combined.columns:
+                        group_cols_eff_bw.append('slot_type')
+                    if group_cols_eff_bw:
+                        bw_combined['Efficiency_Score'] = bw_combined.groupby(group_cols_eff_bw)['Efficiency_Score'].transform('max')
                 if not bw_combined.empty:
                     try:
                         daily_bw = expand_allocation_to_daily(bw_combined, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
-                        with st.expander("📋 Day-wise PLA/PCA allocation (by page context & slot)", expanded=False):
+                        with st.expander("📋 Day-wise PLA/PCA allocation (by page context & slot)", expanded=True):
                             for i, day_name in enumerate(BSD_DAYS):
                                 if i < len(daily_bw) and not daily_bw[i].empty:
                                     df_day_bw = daily_bw[i]
