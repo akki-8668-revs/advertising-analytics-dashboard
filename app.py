@@ -393,7 +393,7 @@ def main():
     if pca_df is not None and bu_col and bu_col in pca_df.columns:
         pca_df = pca_df[pca_df[bu_col].astype(str).str.strip().isin(allowed_bu)]
 
-    tab1, tab2 = st.tabs(["⚡ Budget Optimizer", "🔄 Backward Calculator"])
+    tab1, tab2, tab3 = st.tabs(["⚡ Budget Optimizer", "🔄 Backward Calculator", "📅 Day-Level Split"])
 
     # Build filter options from available data
     df_ref = pla_df if pla_df is not None else pca_df
@@ -406,9 +406,11 @@ def main():
 
     with st.sidebar.expander("📖 Where to click & what to find", expanded=False):
         st.markdown("""
-**Budget Optimizer** — Enter budget → Click **Optimize** → Find: metrics, **Spend Pulse** (7-day PLA/PCA split), allocation table
+**Budget Optimizer** — Enter budget → Click **Optimize** → allocation table
 
-**Backward Calculator** — Select KPI, enter target → Click **Calculate** → Find: required budget, **Spend Pulse** (7-day split)
+**Backward Calculator** — Select KPI, enter target → Click **Calculate** → required budget, allocation
+
+**Day-Level Split** — 7-day PLA/PCA spend (from Budget Optimizer or Backward Calculator)
         """)
     st.sidebar.subheader("Filters (Budget Optimizer)")
     sel_bu = st.sidebar.selectbox("BU", ['All'] + sorted(df_ref[bu_col_opt].dropna().astype(str).unique().tolist())) if bu_col_opt and bu_col_opt in df_ref.columns else 'All'
@@ -476,8 +478,6 @@ def main():
             col2.metric("Expected Revenue", f"₹{total_rev:,.2f}")
             col3.metric("Expected ROI (Revenue/Spend)", f"{avg_roi:.2f}")
 
-            # Day-level spend bifurcation (primary output)
-            st.markdown('<div class="spend-pulse-box"><h3>⚡ Spend Pulse — 7-Day Budget Split</h3><p>PLA vs PCA spend by day (BSD 6–12 March)</p></div>', unsafe_allow_html=True)
             combined_copy = combined.copy()
             if 'Format' not in combined_copy.columns:
                 combined_copy['Format'] = 'PLA'
@@ -492,7 +492,7 @@ def main():
                      'Total Spend (₹)': round((pla_tot + pca_tot) * pct[i], 2), 'PLA %': '50%', 'PCA %': '50%'}
                     for i, d in enumerate(BSD_DAYS)
                 ])
-            st.dataframe(day_phasing_df, use_container_width=True, hide_index=True)
+            st.session_state['day_level_optimizer'] = day_phasing_df
 
             cat_col = 'analytic_super_category' if 'analytic_super_category' in combined.columns else 'super_category'
             base_cols = ['Format', 'brand', cat_col]
@@ -600,8 +600,6 @@ def main():
                     disp_pca = disp_pca.rename(columns={'brand': 'Brand', cat_col: 'Category', 'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'})
                     st.dataframe(disp_pca.round(2), use_container_width=True, hide_index=True)
 
-                # Day-level spend bifurcation for Backward Calculator
-                st.markdown('<div class="spend-pulse-box"><h3>⚡ Spend Pulse — 7-Day Budget Split</h3><p>PLA vs PCA spend by day (BSD 6–12 March)</p></div>', unsafe_allow_html=True)
                 bw_combined = pd.concat(bw_parts, ignore_index=True) if len(bw_parts) > 1 else (bw_parts[0] if bw_parts else pd.DataFrame())
                 if not bw_combined.empty:
                     try:
@@ -615,7 +613,7 @@ def main():
                              'Total Spend (₹)': round((pla_tot + pca_tot) * pct[i], 2), 'PLA %': '50%', 'PCA %': '50%'}
                             for i, d in enumerate(BSD_DAYS)
                         ])
-                    st.dataframe(day_phasing_bw, use_container_width=True, hide_index=True)
+                    st.session_state['day_level_backward'] = day_phasing_bw
                     daily_bw = expand_allocation_to_daily(bw_combined, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
                     with st.expander("📋 Day-wise PLA/PCA allocation (by page context & slot)", expanded=True):
                         for i, day_name in enumerate(BSD_DAYS):
@@ -625,6 +623,24 @@ def main():
                                     st.dataframe(daily_bw[i], use_container_width=True, hide_index=True)
                                 else:
                                     st.caption("No allocation for this day.")
+
+    with tab3:
+        st.subheader("📅 Day-Level Split (BSD 6–12 March)")
+        st.caption("7-day PLA vs PCA spend. Run Budget Optimizer or Backward Calculator first.")
+        st.markdown('<div class="spend-pulse-box"><h3>⚡ Spend Pulse — 7-Day Budget Split</h3><p>PLA vs PCA spend by day</p></div>', unsafe_allow_html=True)
+        has_data = False
+        if 'day_level_optimizer' in st.session_state and not st.session_state['day_level_optimizer'].empty:
+            st.markdown("**From Budget Optimizer**")
+            st.dataframe(st.session_state['day_level_optimizer'], use_container_width=True, hide_index=True)
+            has_data = True
+        if 'day_level_backward' in st.session_state and not st.session_state['day_level_backward'].empty:
+            if has_data:
+                st.divider()
+            st.markdown("**From Backward Calculator**")
+            st.dataframe(st.session_state['day_level_backward'], use_container_width=True, hide_index=True)
+            has_data = True
+        if not has_data:
+            st.info("No day-level data yet. Click **Optimize** in Budget Optimizer or **Calculate** in Backward Calculator first.")
 
 if __name__ == "__main__":
     main()
