@@ -325,7 +325,7 @@ def expand_allocation_to_daily(allocation_df, sel_bu, bu_col, sc_col, df_pla, df
                                 pass
                 phasing = get_phasing_for_bu_sc(bu_val, category)
                 day_budget = budget * phasing[day_idx]
-                r = {'Day': day_name, 'Format': fmt, 'Brand': row.get('brand', row.get('Brand', '')), 'Category': category,
+                r = {'Day': day_name, 'Format': fmt, 'Category': category,
                      'Budget (₹)': round(day_budget, 2)}
                 if include_pla_detail and 'page_context' in allocation_df.columns:
                     r['Page Context'] = str(row.get('page_context', ''))
@@ -495,7 +495,8 @@ def _main():
                 if 'Format' not in combined_copy.columns:
                     combined_copy['Format'] = 'PLA'
                 cat_col = 'analytic_super_category' if 'analytic_super_category' in combined.columns else 'super_category'
-                base_cols = ['Format', 'brand', cat_col]
+                # Remove brand from display — user filters by brand in sidebar if needed
+                base_cols = ['Format', cat_col]
                 if 'page_context' in combined.columns:
                     base_cols.append('page_context')
                 if 'slot_type' in combined.columns:
@@ -508,7 +509,7 @@ def _main():
                 for m in ['CTR', 'Direct_CVR', 'Indirect_CVR']:
                     if m in disp.columns:
                         disp[m] = (disp[m] * 100).round(4).astype(str) + '%'
-                rename_map = {'brand': 'Brand', cat_col: 'Category', 'page_context': 'Page Context', 'slot_type': 'Slot Type',
+                rename_map = {cat_col: 'Category', 'page_context': 'Page Context', 'slot_type': 'Slot Type',
                              'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'}
                 for m, lbl in [('CTR', 'CTR %'), ('Direct_CVR', 'Direct CVR %'), ('Indirect_CVR', 'Indirect CVR %')]:
                     if m in disp.columns:
@@ -521,7 +522,13 @@ def _main():
                     with st.expander("📋 Day-wise PLA/PCA allocation (by page context & slot)", expanded=False):
                         for i, day_name in enumerate(BSD_DAYS):
                             if i < len(daily_tables) and not daily_tables[i].empty:
-                                st.markdown(f"**{day_name}**")
+                                df_day = daily_tables[i]
+                                if 'Format' in df_day.columns and 'Budget (₹)' in df_day.columns:
+                                    pla_day = df_day[df_day['Format'] == 'PLA']['Budget (₹)'].sum()
+                                    pca_day = df_day[df_day['Format'] == 'PCA']['Budget (₹)'].sum()
+                                    st.markdown(f"**{day_name}** — PLA: ₹{pla_day:,.0f} | PCA: ₹{pca_day:,.0f}")
+                                else:
+                                    st.markdown(f"**{day_name}**")
                                 st.dataframe(daily_tables[i].fillna(''), use_container_width=True, hide_index=True)
                 except Exception:
                     pass
@@ -530,6 +537,10 @@ def _main():
                         day_phasing_df = compute_day_level_budgets(combined_copy, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
                     st.subheader("Day-Level Split (BSD 6–12 March)")
                     st.caption("PLA vs PCA spend by day (BU–Super Category phasing)")
+                    if not day_phasing_df.empty and 'PLA Spend (₹)' in day_phasing_df.columns and 'PCA Spend (₹)' in day_phasing_df.columns:
+                        pla_total = day_phasing_df['PLA Spend (₹)'].sum()
+                        pca_total = day_phasing_df['PCA Spend (₹)'].sum()
+                        st.markdown(f"**PLA total: ₹{pla_total:,.0f}** | **PCA total: ₹{pca_total:,.0f}**")
                     st.dataframe(day_phasing_df.fillna(''), use_container_width=True, hide_index=True)
                 except Exception as e:
                     st.warning(f"Could not compute day-level split: {e}")
@@ -597,14 +608,15 @@ def _main():
                     pla_res_bw = pla_res_bw.assign(Format='PLA')
                     bw_parts.append(pla_res_bw)
                     cat_col = 'analytic_super_category' if 'analytic_super_category' in pla_res_bw.columns else 'super_category'
-                    cols = ['Format', 'brand', cat_col, 'Recommended_Budget', 'Expected_Revenue', 'Expected_ROI', 'Efficiency_Score']
+                    # remove brand from display - show category-level numbers when no brand filter applied
+                    cols = ['Format', cat_col, 'Recommended_Budget', 'Expected_Revenue', 'Expected_ROI', 'Efficiency_Score']
                     if 'page_context' in pla_res_bw.columns:
                         cols.insert(4, 'page_context')
                     if 'slot_type' in pla_res_bw.columns:
                         cols.insert(5, 'slot_type')
                     cols = [c for c in cols if c in pla_res_bw.columns]
                     disp_pla = pla_res_bw[[c for c in cols if c in pla_res_bw.columns]].copy()
-                    disp_pla = disp_pla.rename(columns={'brand': 'Brand', cat_col: 'Category', 'page_context': 'Page Context', 'slot_type': 'Slot Type',
+                    disp_pla = disp_pla.rename(columns={cat_col: 'Category', 'page_context': 'Page Context', 'slot_type': 'Slot Type',
                                                        'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'})
                     st.dataframe(disp_pla.round(2).fillna(''), use_container_width=True, hide_index=True)
 
@@ -615,8 +627,9 @@ def _main():
                     pca_res_bw = pca_res_bw.assign(Format='PCA')
                     bw_parts.append(pca_res_bw)
                     cat_col = 'super_category' if 'super_category' in pca_res_bw.columns else 'analytic_super_category'
-                    disp_pca = pca_res_bw[['Format', 'brand', cat_col, 'Recommended_Budget', 'Expected_Revenue', 'Expected_ROI', 'Efficiency_Score']].copy()
-                    disp_pca = disp_pca.rename(columns={'brand': 'Brand', cat_col: 'Category', 'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'})
+                    # remove brand from display for PCA as well
+                    disp_pca = pca_res_bw[['Format', cat_col, 'Recommended_Budget', 'Expected_Revenue', 'Expected_ROI', 'Efficiency_Score']].copy()
+                    disp_pca = disp_pca.rename(columns={cat_col: 'Category', 'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'})
                     st.dataframe(disp_pca.round(2).fillna(''), use_container_width=True, hide_index=True)
 
                 bw_combined = pd.concat(bw_parts, ignore_index=True) if len(bw_parts) > 1 else (bw_parts[0] if bw_parts else pd.DataFrame())
@@ -626,7 +639,13 @@ def _main():
                         with st.expander("📋 Day-wise PLA/PCA allocation (by page context & slot)", expanded=False):
                             for i, day_name in enumerate(BSD_DAYS):
                                 if i < len(daily_bw) and not daily_bw[i].empty:
-                                    st.markdown(f"**{day_name}**")
+                                    df_day_bw = daily_bw[i]
+                                    if 'Format' in df_day_bw.columns and 'Budget (₹)' in df_day_bw.columns:
+                                        pla_day_bw = df_day_bw[df_day_bw['Format'] == 'PLA']['Budget (₹)'].sum()
+                                        pca_day_bw = df_day_bw[df_day_bw['Format'] == 'PCA']['Budget (₹)'].sum()
+                                        st.markdown(f"**{day_name}** — PLA: ₹{pla_day_bw:,.0f} | PCA: ₹{pca_day_bw:,.0f}")
+                                    else:
+                                        st.markdown(f"**{day_name}**")
                                     st.dataframe(daily_bw[i].fillna(''), use_container_width=True, hide_index=True)
                     except Exception:
                         pass
@@ -635,6 +654,10 @@ def _main():
                             day_phasing_bw = compute_day_level_budgets(bw_combined, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
                         st.subheader("Day-Level Split (BSD 6–12 March)")
                         st.caption("PLA vs PCA spend by day (BU–Super Category phasing)")
+                        if not day_phasing_bw.empty and 'PLA Spend (₹)' in day_phasing_bw.columns and 'PCA Spend (₹)' in day_phasing_bw.columns:
+                            pla_total_bw = day_phasing_bw['PLA Spend (₹)'].sum()
+                            pca_total_bw = day_phasing_bw['PCA Spend (₹)'].sum()
+                            st.markdown(f"**PLA total: ₹{pla_total_bw:,.0f}** | **PCA total: ₹{pca_total_bw:,.0f}**")
                         st.dataframe(day_phasing_bw.fillna(''), use_container_width=True, hide_index=True)
                     except Exception as e:
                         st.warning(f"Could not compute day-level split: {e}")
