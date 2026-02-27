@@ -367,7 +367,7 @@ def main():
     if pca_df is not None and bu_col and bu_col in pca_df.columns:
         pca_df = pca_df[pca_df[bu_col].astype(str).str.strip().isin(allowed_bu)]
 
-    tab1, tab2, tab3 = st.tabs(["💰 Budget Optimizer", "🔄 Backward Budget Calculator", "🔍 Brand Insights"])
+    tab1, tab2 = st.tabs(["💰 Budget Optimizer", "🔄 Backward Budget Calculator"])
 
     # Build filter options from available data
     df_ref = pla_df if pla_df is not None else pca_df
@@ -385,9 +385,6 @@ def main():
 
 **Backward Budget Calculator tab**
 - Select KPI, enter target → Click **Calculate** → Find: required budget, PLA/PCA allocation, **Day-Level Spend Bifurcation** table, day-wise breakdown (expandable)
-
-**Brand Insights tab**
-- View brand-level metrics and recommendations
         """)
     st.sidebar.subheader("Filters (Budget Optimizer)")
     sel_bu = st.sidebar.selectbox("BU", ['All'] + sorted(df_ref[bu_col_opt].dropna().astype(str).unique().tolist())) if bu_col_opt and bu_col_opt in df_ref.columns else 'All'
@@ -451,7 +448,7 @@ def main():
             col2.metric("Expected Revenue", f"₹{total_rev:,.2f}")
             col3.metric("Expected ROI (Revenue/Spend)", f"{avg_roi:.2f}")
 
-            # Day-level spend bifurcation (primary output)
+            # Day-level spend bifurcation (primary output) - use markdown table so it always renders
             st.subheader("📅 Day-Level Spend Bifurcation (BSD 6–12 May)")
             st.caption("How much to spend on PLA vs PCA each day.")
             combined_copy = combined.copy()
@@ -460,7 +457,6 @@ def main():
             try:
                 day_phasing_df = compute_day_level_budgets(combined_copy, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
             except Exception:
-                # Fallback: simple uniform split across 7 days
                 pct = [1/7] * 7
                 pla_tot = (combined.loc[combined['Format'] == 'PLA', 'Recommended_Budget'].sum() if 'Format' in combined.columns and not combined.empty else 0) or total_rec * 0.5
                 pca_tot = total_rec - pla_tot
@@ -469,7 +465,11 @@ def main():
                      'Total Spend (₹)': round((pla_tot + pca_tot) * pct[i], 2), 'PLA %': '50%', 'PCA %': '50%'}
                     for i, d in enumerate(BSD_DAYS)
                 ])
-            st.table(day_phasing_df)
+            # Render as markdown table - guaranteed to display
+            md = "| Day | PLA Spend (₹) | PCA Spend (₹) | Total Spend (₹) | PLA % | PCA % |\n|-----|---------------|---------------|-----------------|-------|-------|\n"
+            for _, r in day_phasing_df.iterrows():
+                md += f"| {r['Day']} | {r['PLA Spend (₹)']:,.2f} | {r['PCA Spend (₹)']:,.2f} | {r['Total Spend (₹)']:,.2f} | {r['PLA %']} | {r['PCA %']} |\n"
+            st.markdown(md)
 
             cat_col = 'analytic_super_category' if 'analytic_super_category' in combined.columns else 'super_category'
             base_cols = ['Format', 'brand', cat_col]
@@ -593,7 +593,10 @@ def main():
                              'Total Spend (₹)': round((pla_tot + pca_tot) * pct[i], 2), 'PLA %': '50%', 'PCA %': '50%'}
                             for i, d in enumerate(BSD_DAYS)
                         ])
-                    st.table(day_phasing_bw)
+                    md_bw = "| Day | PLA Spend (₹) | PCA Spend (₹) | Total Spend (₹) | PLA % | PCA % |\n|-----|---------------|---------------|-----------------|-------|-------|\n"
+                    for _, r in day_phasing_bw.iterrows():
+                        md_bw += f"| {r['Day']} | {r['PLA Spend (₹)']:,.2f} | {r['PCA Spend (₹)']:,.2f} | {r['Total Spend (₹)']:,.2f} | {r['PLA %']} | {r['PCA %']} |\n"
+                    st.markdown(md_bw)
                     daily_bw = expand_allocation_to_daily(bw_combined, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
                     with st.expander("📋 Day-wise PLA/PCA allocation (by page context & slot)", expanded=True):
                         for i, day_name in enumerate(BSD_DAYS):
@@ -603,33 +606,6 @@ def main():
                                     st.dataframe(daily_bw[i], use_container_width=True, hide_index=True)
                                 else:
                                     st.caption("No allocation for this day.")
-
-    with tab3:
-        st.subheader("Brand-Level Insights")
-        dfs_ins = []
-        if pla_f is not None and not pla_f.empty:
-            p = pla_f.copy()
-            p['Spend'] = p['spend']
-            dfs_ins.append(p[['brand', 'Spend', 'Total_Revenue', 'Total_ROI', 'CTR']])
-        if pca_f is not None and not pca_f.empty:
-            p = pca_f.copy()
-            p['Spend'] = p['adspend']
-            dfs_ins.append(p[['brand', 'Spend', 'Total_Revenue', 'Total_ROI', 'CTR']])
-        if not dfs_ins:
-            st.info("No data for selected filters.")
-            return
-        df_ins = pd.concat(dfs_ins, ignore_index=True)
-        by_brand = df_ins.groupby('brand').agg(
-            Total_Spend=('Spend', 'sum'),
-            Total_Revenue=('Total_Revenue', 'sum'),
-            CTR=('CTR', 'mean')
-        ).reset_index()
-        by_brand['ROI'] = np.where(by_brand['Total_Spend'] > 0, by_brand['Total_Revenue'] / by_brand['Total_Spend'], 0)
-        st.dataframe(by_brand.round(2), use_container_width=True, hide_index=True)
-        top = by_brand.nlargest(3, 'ROI')
-        low = by_brand.nsmallest(3, 'ROI')
-        st.markdown(f'<div class="recommendation-box"><strong>🚀 Top Brands (ROI)</strong><br>{", ".join(top["brand"].tolist())}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="warning-box"><strong>⚠️ Review</strong><br>{", ".join(low["brand"].tolist())}</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
