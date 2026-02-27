@@ -524,7 +524,23 @@ def _main():
                     if m in disp.columns:
                         rename_map[m] = lbl
                 disp = disp.rename(columns=rename_map)
-                st.dataframe(disp.round(2).fillna(''), use_container_width=True)
+
+                # Split into two separate tables: PLA and PCA
+                if 'Format' in disp.columns:
+                    pla_table = disp[disp['Format'] == 'PLA'].copy()
+                    pca_table = disp[disp['Format'] == 'PCA'].copy()
+                    if 'Format' in pla_table.columns:
+                        pla_table = pla_table.drop(columns=['Format'])
+                    if 'Format' in pca_table.columns:
+                        pca_table = pca_table.drop(columns=['Format'])
+                    if not pla_table.empty:
+                        st.subheader("PLA Allocation (by Category / Page Context / Slot)")
+                        st.dataframe(pla_table.round(2).fillna(''), use_container_width=True, hide_index=True)
+                    if not pca_table.empty:
+                        st.subheader("PCA Allocation (by Category)")
+                        st.dataframe(pca_table.round(2).fillna(''), use_container_width=True, hide_index=True)
+                else:
+                    st.dataframe(disp.round(2).fillna(''), use_container_width=True)
 
                 try:
                     daily_tables = expand_allocation_to_daily(combined_copy, sel_bu, bu_col_opt, sc_col_opt, pla_f, pca_f)
@@ -551,6 +567,17 @@ def _main():
                         pca_total = day_phasing_df['PCA Spend (₹)'].sum()
                         st.markdown(f"**PLA total: ₹{pla_total:,.0f}** | **PCA total: ₹{pca_total:,.0f}**")
                     st.dataframe(day_phasing_df.fillna(''), use_container_width=True, hide_index=True)
+                    # Third table: simple Day x Ad-Format spends (3 columns)
+                    try:
+                        if {'Day', 'PLA Spend (₹)', 'PCA Spend (₹)'} <= set(day_phasing_df.columns):
+                            day_melt = day_phasing_df[['Day', 'PLA Spend (₹)', 'PCA Spend (₹)']].copy()
+                            day_melt = day_melt.melt(id_vars=['Day'], value_vars=['PLA Spend (₹)', 'PCA Spend (₹)'],
+                                                     var_name='Ad Format', value_name='Spend (₹)')
+                            day_melt['Ad Format'] = day_melt['Ad Format'].str.replace(' Spend \\(₹\\)', '').str.strip()
+                            st.subheader('Day × Ad Format Spend')
+                            st.dataframe(day_melt[['Day', 'Ad Format', 'Spend (₹)']].fillna('').round(2), use_container_width=True, hide_index=True)
+                    except Exception:
+                        pass
                 except Exception as e:
                     st.warning(f"Could not compute day-level split: {e}")
 
@@ -678,6 +705,17 @@ def _main():
                             pca_total_bw = day_phasing_bw['PCA Spend (₹)'].sum()
                             st.markdown(f"**PLA total: ₹{pla_total_bw:,.0f}** | **PCA total: ₹{pca_total_bw:,.0f}**")
                         st.dataframe(day_phasing_bw.fillna(''), use_container_width=True, hide_index=True)
+                        # Third table for backward calc: Day x Ad-Format spends (3 columns)
+                        try:
+                            if {'Day', 'PLA Spend (₹)', 'PCA Spend (₹)'} <= set(day_phasing_bw.columns):
+                                day_melt_bw = day_phasing_bw[['Day', 'PLA Spend (₹)', 'PCA Spend (₹)']].copy()
+                                day_melt_bw = day_melt_bw.melt(id_vars=['Day'], value_vars=['PLA Spend (₹)', 'PCA Spend (₹)'],
+                                                               var_name='Ad Format', value_name='Spend (₹)')
+                                day_melt_bw['Ad Format'] = day_melt_bw['Ad Format'].str.replace(' Spend \\(₹\\)', '').str.strip()
+                                st.subheader('Day × Ad Format Spend (Backward Calculator)')
+                                st.dataframe(day_melt_bw[['Day', 'Ad Format', 'Spend (₹)']].fillna('').round(2), use_container_width=True, hide_index=True)
+                        except Exception:
+                            pass
                     except Exception as e:
                         st.warning(f"Could not compute day-level split: {e}")
 
