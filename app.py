@@ -22,6 +22,14 @@ try:
 except ImportError:
     HAS_REQUESTS = False
 
+try:
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaIoBaseDownload
+    HAS_DRIVE_API = True
+except ImportError:
+    HAS_DRIVE_API = False
+
 # Set page configuration
 st.set_page_config(
     page_title="Advertising Performance Analytics",
@@ -65,6 +73,48 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- DATA LOADING FUNCTIONS ---
+
+def _load_from_drive_api_by_name(folder_id, name_patterns):
+    """
+    Use Google Drive API to list files in folder, find by name pattern, and download.
+    No file IDs needed - Python finds files by name.
+    Requires: GOOGLE_DRIVE_FOLDER_ID + GCP_CREDENTIALS_JSON in secrets.
+    """
+    if not HAS_DRIVE_API:
+        return None
+    try:
+        creds_json = None
+        if hasattr(st, 'secrets') and st.secrets:
+            creds_json = st.secrets.get("GCP_CREDENTIALS_JSON")
+            if isinstance(creds_json, dict):
+                creds_json = creds_json
+            elif isinstance(creds_json, str):
+                import json
+                creds_json = json.loads(creds_json)
+        if not creds_json:
+            return None
+        creds = service_account.Credentials.from_service_account_info(
+            creds_json, scopes=['https://www.googleapis.com/auth/drive.readonly']
+        )
+        service = build('drive', 'v3', credentials=creds)
+        query = f"'{folder_id}' in parents and trashed = false"
+        results = service.files().list(q=query, fields="files(id, name)").execute()
+        files = results.get('files', [])
+        for f in files:
+            name_lower = f['name'].lower()
+            if name_lower.endswith('.csv') and all(p in name_lower for p in name_patterns):
+                file_id = f['id']
+                request = service.files().get_media(fileId=file_id)
+                buf = io.BytesIO()
+                downloader = MediaIoBaseDownload(buf, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+                buf.seek(0)
+                return pd.read_csv(buf)
+    except Exception:
+        pass
+    return None
 
 def _download_from_google_drive(url_or_id):
     """Download file from Google Drive URL and return bytes. Handles both full URL and file ID."""
@@ -152,77 +202,68 @@ def _process_pca_df(df):
 def load_pla_data():
     """Load PLA (Performance by Listing Ads) data from Google Drive"""
     try:
-        pla_url = None
         folder_id = None
+        pla_url = None
         if hasattr(st, 'secrets') and st.secrets:
-            pla_url = st.secrets.get("PLA_CSV_URL") or st.secrets.get("PLA_FILE_ID")
             folder_id = st.secrets.get("GOOGLE_DRIVE_FOLDER_ID")
             if not folder_id and st.secrets.get("GOOGLE_DRIVE_FOLDER_URL"):
                 m = re.search(r'/folders/([a-zA-Z0-9_-]+)', str(st.secrets.get("GOOGLE_DRIVE_FOLDER_URL", "")))
                 if m:
                     folder_id = m.group(1)
-        if not pla_url and folder_id:
-            df = _load_csv_from_drive_folder(folder_id, ['pla', 'onetim'])
+            pla_url = st.secrets.get("PLA_CSV_URL") or st.secrets.get("PLA_FILE_ID")
+        # Method 1: Drive API - finds files by name, no file IDs needed
+        if folder_id:
+            df = _load_from_drive_api_by_name(folder_id, ['pla', 'onetim'])
             if df is not None:
                 return _process_pla_df(df)
-        if not pla_url:
-            st.error("PLA_CSV_URL or GOOGLE_DRIVE_FOLDER_ID not configured. Add to Streamlit Cloud: App → Settings → Secrets")
-            st.info("Add: PLA_CSV_URL = \"https://drive.google.com/uc?export=download&id=YOUR_FILE_ID\"")
-            return None
-        # Download from Google Drive
-        data = _download_from_google_drive(pla_url)
-        if data is None:
-            if str(pla_url).startswith("http") and HAS_REQUESTS:
+        # Method 2: Direct file URL (fallback)
+        if pla_url:
+            data = _download_from_google_drive(pla_url)
+            if data is not None:
+                return _process_pla_df(pd.read_csv(io.BytesIO(data)))
+            if HAS_REQUESTS and str(pla_url).startswith("http"):
                 r = requests.get(pla_url)
                 r.raise_for_status()
-                data = r.content
-            else:
-                st.error("Install requests and gdown: pip install requests gdown")
-                return None
-        if data is not None:
-            df = pd.read_csv(io.BytesIO(data))
-        return _process_pla_df(df)
+                return _process_pla_df(pd.read_csv(io.BytesIO(r.content)))
+        st.error("Google Drive not configured. Add to Streamlit Cloud: App → Settings → Secrets")
+        st.info("**No file IDs needed.** Add: 1) GOOGLE_DRIVE_FOLDER_ID  2) GCP_CREDENTIALS_JSON (paste your akshay_kumar_ads.json). Share the Drive folder with the service account email from the JSON.")
+        return None
     except Exception as e:
-        st.error(f"Error loading PLA data from Google Drive: {e}")
-        st.info("Ensure PLA_CSV_URL is set in Streamlit Cloud Secrets with your Google Drive file link.")
+        st.error(f"Error loading PLA data: {e}")
         return None
 
 @st.cache_data
 def load_pca_data():
     """Load PCA (Product Creative Ads) data from Google Drive"""
     try:
-        pca_url = None
         folder_id = None
+        pca_url = None
         if hasattr(st, 'secrets') and st.secrets:
-            pca_url = st.secrets.get("PCA_CSV_URL") or st.secrets.get("PCA_FILE_ID")
             folder_id = st.secrets.get("GOOGLE_DRIVE_FOLDER_ID")
             if not folder_id and st.secrets.get("GOOGLE_DRIVE_FOLDER_URL"):
                 m = re.search(r'/folders/([a-zA-Z0-9_-]+)', str(st.secrets.get("GOOGLE_DRIVE_FOLDER_URL", "")))
                 if m:
                     folder_id = m.group(1)
-        if not pca_url and folder_id:
-            df = _load_csv_from_drive_folder(folder_id, ['pca', 'onetim'])
+            pca_url = st.secrets.get("PCA_CSV_URL") or st.secrets.get("PCA_FILE_ID")
+        # Method 1: Drive API - finds files by name, no file IDs needed
+        if folder_id:
+            df = _load_from_drive_api_by_name(folder_id, ['pca', 'onetim'])
             if df is not None:
                 return _process_pca_df(df)
-        if not pca_url:
-            st.error("PCA_CSV_URL or GOOGLE_DRIVE_FOLDER_ID not configured. Add to Streamlit Cloud: App → Settings → Secrets")
-            st.info("Add: PCA_CSV_URL = \"https://drive.google.com/uc?export=download&id=YOUR_FILE_ID\"")
-            return None
-        data = _download_from_google_drive(pca_url)
-        if data is None:
-            if str(pca_url).startswith("http") and HAS_REQUESTS:
+        # Method 2: Direct file URL (fallback)
+        if pca_url:
+            data = _download_from_google_drive(pca_url)
+            if data is not None:
+                return _process_pca_df(pd.read_csv(io.BytesIO(data)))
+            if HAS_REQUESTS and str(pca_url).startswith("http"):
                 r = requests.get(pca_url)
                 r.raise_for_status()
-                data = r.content
-            else:
-                st.error("Install requests and gdown: pip install requests gdown")
-                return None
-        if data is not None:
-            df = pd.read_csv(io.BytesIO(data))
-        return _process_pca_df(df)
+                return _process_pca_df(pd.read_csv(io.BytesIO(r.content)))
+        st.error("Google Drive not configured. Add to Streamlit Cloud: App → Settings → Secrets")
+        st.info("**No file IDs needed.** Add: 1) GOOGLE_DRIVE_FOLDER_ID  2) GCP_CREDENTIALS_JSON (paste your akshay_kumar_ads.json). Share the Drive folder with the service account email from the JSON.")
+        return None
     except Exception as e:
-        st.error(f"Error loading PCA data from Google Drive: {e}")
-        st.info("Ensure PCA_CSV_URL is set in Streamlit Cloud Secrets with your Google Drive file link.")
+        st.error(f"Error loading PCA data: {e}")
         return None
 
 # --- KPI CALCULATION FUNCTIONS ---
