@@ -197,6 +197,18 @@ def load_pca_data():
     st.error("Google Drive not configured.")
     return None
 
+@st.cache_data
+def load_pla_processed():
+    """Load PLA and compute KPIs — cached (data is static)."""
+    df = load_pla_data()
+    return calculate_pla_kpis(df) if df is not None else None
+
+@st.cache_data
+def load_pca_processed():
+    """Load PCA and compute KPIs — cached (data is static)."""
+    df = load_pca_data()
+    return calculate_pca_kpis(df) if df is not None else None
+
 # --- KPI CALCULATIONS ---
 def calculate_pla_kpis(df):
     df = df.copy()
@@ -254,14 +266,16 @@ def compute_day_level_budgets(allocation_df, sel_bu, bu_col, sc_col, df_pla, df_
     """
     day_budgets = {d: {'PLA': 0.0, 'PCA': 0.0} for d in BSD_DAYS}
     cat_col = 'analytic_super_category' if 'analytic_super_category' in allocation_df.columns else 'super_category'
-    for _, row in allocation_df.iterrows():
+    cols = list(allocation_df.columns)
+    for row in allocation_df.itertuples(index=False):
         try:
-            fmt = str(row.get('Format', 'PLA') or 'PLA')
-            budget = row.get('Recommended_Budget', row.get('Budget (₹)', 0))
+            r = dict(zip(cols, row))
+            fmt = str(r.get('Format', 'PLA') or 'PLA')
+            budget = r.get('Recommended_Budget', r.get('Budget (₹)', 0))
             if pd.isna(budget) or budget <= 0:
                 continue
             budget = float(budget)
-            category = str(row.get(cat_col) or row.get('super_category') or row.get('Category') or 'Gaming').strip() or 'Gaming'
+            category = str(r.get(cat_col) or r.get('super_category') or r.get('Category') or 'Gaming').strip() or 'Gaming'
             if sel_bu != 'All':
                 bu_val = str(sel_bu)
             else:
@@ -272,7 +286,7 @@ def compute_day_level_budgets(allocation_df, sel_bu, bu_col, sc_col, df_pla, df_
                     sc_col_src = 'analytic_super_category' if 'analytic_super_category' in src.columns else 'super_category'
                     if sc_col_src in src.columns:
                         try:
-                            match = src[(src['brand'].astype(str) == str(row.get('brand', ''))) & (src[sc_col_src].astype(str) == category)]
+                            match = src[(src['brand'].astype(str) == str(r.get('brand', ''))) & (src[sc_col_src].astype(str) == category)]
                             if not match.empty and bu_col in match.columns and match[bu_col].notna().any():
                                 bu_val = str(match[bu_col].mode().iloc[0])
                         except Exception:
@@ -297,17 +311,19 @@ def expand_allocation_to_daily(allocation_df, sel_bu, bu_col, sc_col, df_pla, df
     Expand allocation to day-level with page_context, slot for PLA. Uses BU-Super Category phasing.
     """
     cat_col = 'analytic_super_category' if 'analytic_super_category' in allocation_df.columns else 'super_category'
+    cols = list(allocation_df.columns)
     daily_tables = []
     for day_idx, day_name in enumerate(BSD_DAYS):
         day_rows = []
-        for _, row in allocation_df.iterrows():
+        for row in allocation_df.itertuples(index=False):
             try:
-                fmt = str(row.get('Format', 'PLA') or 'PLA')
-                budget = row.get('Recommended_Budget', row.get('Budget (₹)', 0))
+                r = dict(zip(cols, row))
+                fmt = str(r.get('Format', 'PLA') or 'PLA')
+                budget = r.get('Recommended_Budget', r.get('Budget (₹)', 0))
                 if pd.isna(budget) or budget <= 0:
                     continue
                 budget = float(budget)
-                category = str(row.get(cat_col) or row.get('super_category') or row.get('Category') or '').strip() or 'Gaming'
+                category = str(r.get(cat_col) or r.get('super_category') or r.get('Category') or '').strip() or 'Gaming'
                 if sel_bu != 'All':
                     bu_val = str(sel_bu)
                 else:
@@ -318,20 +334,19 @@ def expand_allocation_to_daily(allocation_df, sel_bu, bu_col, sc_col, df_pla, df
                         sc_col_src = 'analytic_super_category' if 'analytic_super_category' in src.columns else 'super_category'
                         if sc_col_src in src.columns:
                             try:
-                                match = src[(src['brand'].astype(str) == str(row.get('brand', ''))) & (src[sc_col_src].astype(str) == category)]
+                                match = src[(src['brand'].astype(str) == str(r.get('brand', ''))) & (src[sc_col_src].astype(str) == category)]
                                 if not match.empty and bu_col in match.columns and match[bu_col].notna().any():
                                     bu_val = str(match[bu_col].mode().iloc[0])
                             except Exception:
                                 pass
                 phasing = get_phasing_for_bu_sc(bu_val, category)
                 day_budget = budget * phasing[day_idx]
-                r = {'Day': day_name, 'Format': fmt, 'Category': category,
-                     'Budget (₹)': round(day_budget, 2)}
+                out = {'Day': day_name, 'Format': fmt, 'Category': category, 'Budget (₹)': round(day_budget, 2)}
                 if include_pla_detail and 'page_context' in allocation_df.columns:
-                    r['Page Context'] = str(row.get('page_context', ''))
+                    out['Page Context'] = str(r.get('page_context', ''))
                 if include_pla_detail and 'slot_type' in allocation_df.columns:
-                    r['Slot Type'] = str(row.get('slot_type', ''))
-                day_rows.append(r)
+                    out['Slot Type'] = str(r.get('slot_type', ''))
+                day_rows.append(out)
             except Exception:
                 continue
         daily_tables.append(pd.DataFrame(day_rows) if day_rows else pd.DataFrame())
@@ -384,13 +399,10 @@ def _main():
     st.caption("For Internal Use Only")
     st.title("Spend Pulse — BSD Budget Optimizer")
 
-    pla_df = load_pla_data()
-    pca_df = load_pca_data()
+    pla_df = load_pla_processed()
+    pca_df = load_pca_processed()
     if pla_df is None and pca_df is None:
         return
-
-    pla_df = calculate_pla_kpis(pla_df) if pla_df is not None else None
-    pca_df = calculate_pca_kpis(pca_df) if pca_df is not None else None
 
     # Filter: Electronics and Large Appliances only (no Mobile). Include Large, LargeAppliances.
     bu_col = 'business_unit' if 'business_unit' in (pla_df.columns if pla_df is not None else []) else 'analytic_vertical'
