@@ -415,7 +415,7 @@ def _main():
         st.markdown("""
 **Budget Optimizer** (tab 1) — Enter budget → Click **Optimize** → metrics, allocation, day-level split (at end)
 
-**Backward Calculator** (tab 2) — Select KPI, enter target → Click **Calculate** → budget, allocation, day-level split (at end)
+**Budget Estimator** (tab 2) — Select KPI, enter target → Click **Calculate** → budget, allocation, day-level split (at end)
         """)
     st.sidebar.subheader("Filters (Budget Optimizer)")
     sel_bu = st.sidebar.selectbox("BU", ['All'] + sorted(df_ref[bu_col_opt].dropna().astype(str).unique().tolist())) if bu_col_opt and bu_col_opt in df_ref.columns else 'All'
@@ -437,7 +437,7 @@ def _main():
     pla_f = apply_filters(pla_df) if pla_df is not None else None
     pca_f = apply_filters(pca_df) if pca_df is not None else None
 
-    tab_opt, tab_bw = st.tabs(["Budget Optimizer", "Backward Budget Calculator"])
+    tab_opt, tab_bw = st.tabs(["Budget Optimizer", "Budget Estimator"])
 
     with tab_opt:
         st.subheader("Budget Optimizer (BSD 6–12 March)")
@@ -582,7 +582,7 @@ def _main():
                     st.warning(f"Could not compute day-level split: {e}")
 
     with tab_bw:
-        st.subheader("Backward Budget Calculator")
+        st.subheader("Budget Estimator")
         st.caption("Enter a KPI and target value → get required PLA (page context, slot) and PCA budget.")
 
         kpi_bw = st.selectbox("Select KPI", ['Total_ROI', 'Direct_ROI', 'Indirect_ROI', 'Total_Revenue', 'Total_Units', 'Direct_CVR', 'Indirect_CVR'], key='bw_kpi')
@@ -712,7 +712,7 @@ def _main():
                                 day_melt_bw = day_melt_bw.melt(id_vars=['Day'], value_vars=['PLA Spend (₹)', 'PCA Spend (₹)'],
                                                                var_name='Ad Format', value_name='Spend (₹)')
                                 day_melt_bw['Ad Format'] = day_melt_bw['Ad Format'].str.replace(' Spend \\(₹\\)', '').str.strip()
-                                st.subheader('Day × Ad Format Spend (Backward Calculator)')
+                                st.subheader('Day × Ad Format Spend (Budget Estimator)')
                                 st.dataframe(day_melt_bw[['Day', 'Ad Format', 'Spend (₹)']].fillna('').round(2), use_container_width=True, hide_index=True)
                         except Exception:
                             pass
