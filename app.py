@@ -465,6 +465,8 @@ def _main():
         pla_hist = pla_f['spend'].sum() if pla_f is not None and not pla_f.empty and 'spend' in pla_f.columns else 0
         pca_hist = pca_f['adspend'].sum() if pca_f is not None and not pca_f.empty and 'adspend' in pca_f.columns else 0
         tot_hist = pla_hist + pca_hist
+        pla_hist_rev = pla_f['Total_Revenue'].sum() if pla_f is not None and not pla_f.empty and 'Total_Revenue' in pla_f.columns else 0
+        pca_hist_rev = pca_f['Total_Revenue'].sum() if pca_f is not None and not pca_f.empty and 'Total_Revenue' in pca_f.columns else 0
         pla_share = pla_hist / tot_hist if tot_hist > 0 else 0.5
         pca_share = 1.0 - pla_share
         pla_budget = total_budget * pla_share
@@ -494,8 +496,10 @@ def _main():
                 total_rev = combined['Expected_Revenue'].sum()
                 total_rec_safe = total_rec if total_rec > 0 else 1
                 def _exp(m): return (combined[m] * combined['Recommended_Budget']).sum() / total_rec_safe if m in combined.columns else 0
-                exp_roi = total_rev / total_rec_safe
-                # CTR: use sum(scaled_clicks)/sum(scaled_views), not mean of CTRs
+                # Expected ROI: historical baseline (sum revenue / sum spend)
+                tot_hist_rev = pla_hist_rev + pca_hist_rev
+                exp_roi = tot_hist_rev / tot_hist if tot_hist > 0 else (total_rev / total_rec_safe)
+                # CTR: sum(clicks)/sum(views), exclude segments with zero views to avoid inflation
                 _spend = pd.Series(0.0, index=combined.index)
                 for c in ['spend', 'adspend']:
                     if c in combined.columns:
@@ -504,7 +508,7 @@ def _main():
                 for c in ['total_views', 'viewcount']:
                     if c in combined.columns:
                         _views = _views + combined[c].fillna(0)
-                mask = _spend > 0
+                mask = (_spend > 0) & (_views > 0)
                 if mask.any() and 'clicks' in combined.columns:
                     exp_clicks = (combined.loc[mask, 'clicks'] * combined.loc[mask, 'Recommended_Budget'] / _spend[mask]).sum()
                     exp_views = (_views[mask] * combined.loc[mask, 'Recommended_Budget'] / _spend[mask]).sum()
@@ -527,7 +531,7 @@ def _main():
                 col2.metric("Expected Revenue", f"₹{total_rev:,.2f}")
                 col3.metric("Expected ROI", f"{exp_roi:.2f}")
                 col4, col5, col6 = st.columns(3)
-                col4.metric("Expected CTR", f"{exp_ctr*100:.2f}%")
+                col4.metric("Expected CTR", f"{min(exp_ctr, 1.0)*100:.2f}%")
                 col5.metric("Expected Direct CVR", f"{exp_dcvr*100:.4f}%")
                 col6.metric("Expected Indirect CVR", f"{exp_icvr*100:.4f}%")
 
@@ -556,7 +560,10 @@ def _main():
                 disp = combined[[c for c in base_cols if c in combined.columns]].copy()
                 for m in ['CTR', 'Direct_CVR', 'Indirect_CVR']:
                     if m in disp.columns:
-                        disp[m] = (disp[m] * 100).round(4).astype(str) + '%'
+                        vals = pd.to_numeric(disp[m], errors='coerce').fillna(0)
+                        if m == 'CTR':
+                            vals = np.minimum(vals, 1.0)
+                        disp[m] = (vals * 100).round(4).astype(str) + '%'
                 rename_map = {'_cat': 'Category', 'page_context': 'Page Context', 'slot_type': 'Slot Type', 'page_type': 'Page Type',
                              'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI'}
                 for m, lbl in [('CTR', 'CTR %'), ('Direct_CVR', 'Direct CVR %'), ('Indirect_CVR', 'Indirect CVR %')]:
