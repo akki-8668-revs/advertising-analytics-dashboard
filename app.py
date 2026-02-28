@@ -464,7 +464,8 @@ def _main():
                     pla_res['Format'] = 'PLA'
                     results.append(pla_res)
             if pca_f is not None and not pca_f.empty and pca_budget > 0:
-                pca_res = optimize_budget(pca_f, pca_budget, 'pca', selected_kpi)
+                pca_res = optimize_budget(pca_f, pca_budget, 'pca', selected_kpi,
+                                           ['page_type'] if 'page_type' in pca_f.columns else None)
                 if not pca_res.empty:
                     pca_res = pca_res.copy()
                     pca_res['Format'] = 'PCA'
@@ -503,14 +504,24 @@ def _main():
                 combined_copy = combined.copy()
                 if 'Format' not in combined_copy.columns:
                     combined_copy['Format'] = 'PLA'
-                cat_col = 'analytic_super_category' if 'analytic_super_category' in combined.columns else 'super_category'
-                # Remove brand from display — user filters by brand in sidebar if needed
-                base_cols = ['Format', cat_col]
+                # Unified category: PLA has analytic_super_category, PCA has super_category
+                if 'analytic_super_category' in combined.columns and 'super_category' in combined.columns:
+                    combined = combined.copy()
+                    combined['_cat'] = combined['analytic_super_category'].fillna(combined['super_category'])
+                elif 'analytic_super_category' in combined.columns:
+                    combined = combined.copy()
+                    combined['_cat'] = combined['analytic_super_category']
+                else:
+                    combined = combined.copy()
+                    combined['_cat'] = combined['super_category'] if 'super_category' in combined.columns else ''
+                # No Efficiency Score in display; PLA uses page_context/slot_type, PCA uses page_type
+                base_cols = ['Format', '_cat', 'Recommended_Budget', 'Expected_Revenue', 'Expected_ROI']
                 if 'page_context' in combined.columns:
                     base_cols.append('page_context')
                 if 'slot_type' in combined.columns:
                     base_cols.append('slot_type')
-                base_cols += ['Recommended_Budget', 'Expected_Revenue', 'Expected_ROI', 'Efficiency_Score']
+                if 'page_type' in combined.columns:
+                    base_cols.append('page_type')
                 for m in ['CTR', 'Direct_CVR', 'Indirect_CVR']:
                     if m in combined.columns and m not in base_cols:
                         base_cols.append(m)
@@ -518,8 +529,8 @@ def _main():
                 for m in ['CTR', 'Direct_CVR', 'Indirect_CVR']:
                     if m in disp.columns:
                         disp[m] = (disp[m] * 100).round(4).astype(str) + '%'
-                rename_map = {cat_col: 'Category', 'page_context': 'Page Context', 'slot_type': 'Slot Type',
-                             'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'}
+                rename_map = {'_cat': 'Category', 'page_context': 'Page Context', 'slot_type': 'Slot Type', 'page_type': 'Page Type',
+                             'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI'}
                 for m, lbl in [('CTR', 'CTR %'), ('Direct_CVR', 'Direct CVR %'), ('Indirect_CVR', 'Indirect CVR %')]:
                     if m in disp.columns:
                         rename_map[m] = lbl
@@ -533,11 +544,18 @@ def _main():
                         pla_table = pla_table.drop(columns=['Format'])
                     if 'Format' in pca_table.columns:
                         pca_table = pca_table.drop(columns=['Format'])
+                    # PLA: keep Page Context, Slot Type; drop Page Type
+                    if 'Page Type' in pla_table.columns:
+                        pla_table = pla_table.drop(columns=['Page Type'])
+                    # PCA: keep Page Type; drop Page Context, Slot Type (PLA-only)
+                    for drop_col in ['Page Context', 'Slot Type']:
+                        if drop_col in pca_table.columns:
+                            pca_table = pca_table.drop(columns=[drop_col])
                     if not pla_table.empty:
                         st.subheader("PLA Allocation (by Category / Page Context / Slot)")
                         st.dataframe(pla_table.round(2).fillna(''), use_container_width=True, hide_index=True)
                     if not pca_table.empty:
-                        st.subheader("PCA Allocation (by Category)")
+                        st.subheader("PCA Allocation (by Category / Page Type)")
                         st.dataframe(pca_table.round(2).fillna(''), use_container_width=True, hide_index=True)
                 else:
                     st.dataframe(disp.round(2).fillna(''), use_container_width=True)
@@ -644,8 +662,7 @@ def _main():
                     pla_res_bw = pla_res_bw.assign(Format='PLA')
                     bw_parts.append(pla_res_bw)
                     cat_col = 'analytic_super_category' if 'analytic_super_category' in pla_res_bw.columns else 'super_category'
-                    # remove brand from display - show category-level numbers when no brand filter applied
-                    cols = ['Format', cat_col, 'Recommended_Budget', 'Expected_Revenue', 'Expected_ROI', 'Efficiency_Score']
+                    cols = ['Format', cat_col, 'Recommended_Budget', 'Expected_Revenue', 'Expected_ROI']
                     if 'page_context' in pla_res_bw.columns:
                         cols.insert(4, 'page_context')
                     if 'slot_type' in pla_res_bw.columns:
@@ -653,19 +670,30 @@ def _main():
                     cols = [c for c in cols if c in pla_res_bw.columns]
                     disp_pla = pla_res_bw[[c for c in cols if c in pla_res_bw.columns]].copy()
                     disp_pla = disp_pla.rename(columns={cat_col: 'Category', 'page_context': 'Page Context', 'slot_type': 'Slot Type',
-                                                       'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'})
+                                                       'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI'})
+                    if 'Format' in disp_pla.columns:
+                        disp_pla = disp_pla.drop(columns=['Format'])
                     st.dataframe(disp_pla.round(2).fillna(''), use_container_width=True, hide_index=True)
 
                 if pca_f is not None and not pca_f.empty and pca_budget_req > 0:
                     st.subheader("PCA Budget Allocation")
                     kpi_pca = kpi_bw if kpi_bw in pca_f.columns else 'Total_ROI'
-                    pca_res_bw = optimize_budget(pca_f, pca_budget_req, 'pca', kpi_pca)
+                    pca_res_bw = optimize_budget(pca_f, pca_budget_req, 'pca', kpi_pca,
+                                                  ['page_type'] if 'page_type' in pca_f.columns else None)
                     pca_res_bw = pca_res_bw.assign(Format='PCA')
                     bw_parts.append(pca_res_bw)
                     cat_col = 'super_category' if 'super_category' in pca_res_bw.columns else 'analytic_super_category'
-                    # remove brand from display for PCA as well
-                    disp_pca = pca_res_bw[['Format', cat_col, 'Recommended_Budget', 'Expected_Revenue', 'Expected_ROI', 'Efficiency_Score']].copy()
-                    disp_pca = disp_pca.rename(columns={cat_col: 'Category', 'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI', 'Efficiency_Score': 'Efficiency Score'})
+                    pca_disp_cols = ['Format', cat_col, 'Recommended_Budget', 'Expected_Revenue', 'Expected_ROI']
+                    if 'page_type' in pca_res_bw.columns:
+                        pca_disp_cols.insert(3, 'page_type')
+                    pca_disp_cols = [c for c in pca_disp_cols if c in pca_res_bw.columns]
+                    disp_pca = pca_res_bw[pca_disp_cols].copy()
+                    rename_pca = {cat_col: 'Category', 'Recommended_Budget': 'Budget (₹)', 'Expected_Revenue': 'Expected Revenue (₹)', 'Expected_ROI': 'Expected ROI'}
+                    if 'page_type' in disp_pca.columns:
+                        rename_pca['page_type'] = 'Page Type'
+                    disp_pca = disp_pca.rename(columns=rename_pca)
+                    if 'Format' in disp_pca.columns:
+                        disp_pca = disp_pca.drop(columns=['Format'])
                     st.dataframe(disp_pca.round(2).fillna(''), use_container_width=True, hide_index=True)
 
                 bw_combined = pd.concat(bw_parts, ignore_index=True) if len(bw_parts) > 1 else (bw_parts[0] if bw_parts else pd.DataFrame())
