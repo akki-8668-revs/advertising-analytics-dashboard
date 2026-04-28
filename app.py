@@ -155,7 +155,17 @@ def _resolve_gcp_credentials():
             return False
         if d.get("type") != "service_account":
             return False
-        if not d.get("private_key") or not d.get("client_email"):
+        pk = d.get("private_key")
+        em = d.get("client_email")
+        if not isinstance(pk, str) or not isinstance(em, str) or not em.strip():
+            return False
+        if not pk.strip():
+            return False
+        # JSON uses \n in the string; normalize so PEM markers are detectable
+        norm = pk.replace("\\n", "\n")
+        if "-----BEGIN" not in norm or "PRIVATE KEY" not in norm:
+            return False
+        if len(norm) < 200:
             return False
         return True
 
@@ -315,6 +325,27 @@ def _downcast_groupby_strings(df):
     return out
 
 
+def _ensure_unique_column_labels(df):
+    """Pandas groupby and st.dataframe fail on duplicate column names (e.g. repeated CSV headers)."""
+    if df is None or df.empty:
+        return df
+    cols = list(df.columns)
+    if len(cols) == len(set(cols)):
+        return df
+    seen = {}
+    new_cols = []
+    for c in cols:
+        if c not in seen:
+            seen[c] = 0
+            new_cols.append(c)
+        else:
+            seen[c] += 1
+            new_cols.append(f"{c}__dup{seen[c]}")
+    out = df.copy()
+    out.columns = new_cols
+    return out
+
+
 def _load_from_drive_api_by_name(folder_id, name_patterns, required_cols_lower):
     """
     Returns (dataframe or None, diagnostic_message or None).
@@ -382,7 +413,17 @@ def _load_from_drive_api_by_name(folder_id, name_patterns, required_cols_lower):
             return None, msg
         return pd.concat(frames, ignore_index=True, sort=False), None
     except Exception as ex:
-        return None, f"Drive API error: {type(ex).__name__}: {str(ex)[:200]}"
+        msg = f"Drive API error: {type(ex).__name__}: {str(ex)[:280]}"
+        low = str(ex).lower()
+        if "invalid jwt" in low or "invalid_grant" in low:
+            msg += (
+                " — **Invalid JWT signature** almost always means `private_key` in Streamlit Secrets is wrong: "
+                "truncated, edited, or broken when pasted (newlines must stay as in the downloaded JSON). "
+                "**Fix:** Google Cloud Console → IAM → Service Accounts → select account → Keys → **Add key** → JSON. "
+                "Replace **entire** `GCP_CREDENTIALS_JSON` in Secrets with one paste of that file inside "
+                "`GCP_CREDENTIALS_JSON = ''' ... '''`. Do not change the key text by hand. Revoke the old key after."
+            )
+        return None, msg
 
 def _download_from_google_drive(url_or_id):
     if not url_or_id or not isinstance(url_or_id, str):
@@ -549,7 +590,7 @@ def load_pla_processed(_secrets_key: str):
     if df is None:
         return None
     out = calculate_pla_kpis(df)
-    return _downcast_groupby_strings(out)
+    return _ensure_unique_column_labels(_downcast_groupby_strings(out))
 
 @st.cache_data
 def load_pca_processed(_secrets_key: str):
@@ -558,7 +599,7 @@ def load_pca_processed(_secrets_key: str):
     if df is None:
         return None
     out = calculate_pca_kpis(df)
-    return _downcast_groupby_strings(out)
+    return _ensure_unique_column_labels(_downcast_groupby_strings(out))
 
 # --- KPI CALCULATIONS ---
 def calculate_pla_kpis(df):
@@ -1277,12 +1318,19 @@ def _main():
                 else:
                     pred_combined = pd.concat(pred_parts, ignore_index=True)
                     st.subheader("Predicted Allocation (May'26 BSD)")
-                    show_cols = ['Format', 'brand', 'analytic_super_category', 'super_category', 'page_context', 'slot_type', 'page_type', 'Recommended_Budget', 'Expected_Revenue', 'Expected_ROI']
-                    show_cols = [c for c in show_cols if c in pred_combined.columns]
-                    pred_show = pred_combined[show_cols].copy()
-                    pred_show = pred_show.rename(columns={
-                        'analytic_super_category': 'Category',
-                        'super_category': 'Category',
+                    ps = pred_combined.copy()
+                    if 'analytic_super_category' in ps.columns and 'super_category' in ps.columns:
+                        ps['_cat'] = ps['analytic_super_category'].fillna(ps['super_category'])
+                    elif 'analytic_super_category' in ps.columns:
+                        ps['_cat'] = ps['analytic_super_category']
+                    elif 'super_category' in ps.columns:
+                        ps['_cat'] = ps['super_category']
+                    else:
+                        ps['_cat'] = ''
+                    show_cols = ['Format', 'brand', '_cat', 'page_context', 'slot_type', 'page_type', 'Recommended_Budget', 'Expected_Revenue', 'Expected_ROI']
+                    show_cols = [c for c in show_cols if c in ps.columns]
+                    pred_show = ps[show_cols].rename(columns={
+                        '_cat': 'Category',
                         'page_context': 'Page Context',
                         'slot_type': 'Slot Type',
                         'page_type': 'Page Type',
