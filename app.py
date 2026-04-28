@@ -960,9 +960,10 @@ def _main():
                 total_rev = combined['Expected_Revenue'].sum()
                 total_rec_safe = total_rec if total_rec > 0 else 1
                 def _exp(m): return (combined[m] * combined['Recommended_Budget']).sum() / total_rec_safe if m in combined.columns else 0
-                # Expected ROI: historical baseline (sum revenue / sum spend)
+                # Expected ROI must match Expected Revenue ÷ recommended budget (portfolio-implied).
                 tot_hist_rev = pla_hist_rev + pca_hist_rev
-                exp_roi = tot_hist_rev / tot_hist if tot_hist > 0 else (total_rev / total_rec_safe)
+                exp_roi = total_rev / total_rec_safe if total_rec_safe > 0 else 0.0
+                hist_roi_blended = tot_hist_rev / tot_hist if tot_hist > 0 else None
                 # CTR: sum(clicks)/sum(views), exclude segments with zero views to avoid inflation
                 _spend = pd.Series(0.0, index=combined.index)
                 for c in ['spend', 'adspend']:
@@ -998,6 +999,11 @@ def _main():
                 col4.metric("Expected CTR", f"{min(exp_ctr, 1.0)*100:.2f}%")
                 col5.metric("Expected Direct CVR", f"{exp_dcvr*100:.4f}%")
                 col6.metric("Expected Indirect CVR", f"{exp_icvr*100:.4f}%")
+                if tot_hist > 0:
+                    st.caption(
+                        f"Historical blended ROI (Total_Revenue ÷ spend in filtered history): **{hist_roi_blended:.2f}** — "
+                        "shown for context only; **Expected ROI** above is revenue implied by this allocation ÷ ₹ budget."
+                    )
 
                 combined_copy = combined.copy()
                 if 'Format' not in combined_copy.columns:
