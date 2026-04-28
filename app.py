@@ -2,10 +2,23 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import io
+import os
 import re
+import json
+import hashlib
 import functools
+import tempfile
 import warnings
 warnings.filterwarnings('ignore')
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+# Chunk size for large CSVs (rows per chunk). Tune via env CSV_CHUNK_ROWS if needed.
+CSV_CHUNK_ROWS = int(os.environ.get("CSV_CHUNK_ROWS", "250000"))
 
 # Try to import gdown for Google Drive downloads
 try:
@@ -127,8 +140,138 @@ PCA_REQUIRED_COLS_LOWER = {
 st.set_page_config(page_title="Spend Pulse | BSD Budget Optimizer", page_icon="⚡", layout="wide", initial_sidebar_state="expanded")
 
 # --- DATA LOADING ---
+def _resolve_gcp_credentials():
+    """
+    Return (credentials dict or None, error hint or None).
+    Error hints are safe to show users (no secret values).
+
+    Streamlit Community Cloud: paste full JSON in Secrets as GCP_CREDENTIALS_JSON
+    (multiline JSON must be wrapped in triple quotes in TOML).
+
+    Locally: `.streamlit/secrets.toml` with GCP_CREDENTIALS_JSON or GCP_CREDENTIALS_PATH.
+    """
+    def _validate_sa(d):
+        if not isinstance(d, dict):
+            return False
+        if d.get("type") != "service_account":
+            return False
+        if not d.get("private_key") or not d.get("client_email"):
+            return False
+        return True
+
+    try:
+        if hasattr(st, 'secrets') and st.secrets:
+            raw = st.secrets.get("GCP_CREDENTIALS_JSON")
+            if raw is not None:
+                if isinstance(raw, dict):
+                    if _validate_sa(raw):
+                        return raw, None
+                    return None, "GCP_CREDENTIALS_JSON must be a service account JSON (type, client_email, private_key)."
+                if isinstance(raw, str):
+                    s = raw.strip().lstrip("\ufeff")
+                    if not s:
+                        return None, "GCP_CREDENTIALS_JSON is empty in Secrets."
+                    try:
+                        d = json.loads(s)
+                    except json.JSONDecodeError:
+                        return None, (
+                            "GCP_CREDENTIALS_JSON is not valid JSON. In Streamlit Secrets use TOML triple quotes, e.g. "
+                            "GCP_CREDENTIALS_JSON = ''' { paste entire json here } '''"
+                        )
+                    if _validate_sa(d):
+                        return d, None
+                    return None, "JSON parses but is not a valid service_account key (check type, client_email, private_key)."
+            path_secret = st.secrets.get("GCP_CREDENTIALS_PATH")
+            if path_secret:
+                p = str(path_secret).strip().strip('"').strip("'")
+                if p and os.path.isfile(p):
+                    with open(p, "r", encoding="utf-8") as f:
+                        d = json.load(f)
+                    if _validate_sa(d):
+                        return d, None
+                    return None, "File at GCP_CREDENTIALS_PATH is not a valid service account JSON."
+    except json.JSONDecodeError:
+        return None, "Could not parse credential JSON. Use triple-quoted multiline string in Secrets."
+    except Exception as e:
+        return None, f"Error reading credentials (check Secrets format). {type(e).__name__}"
+
+    env_json = os.environ.get("GCP_CREDENTIALS_JSON")
+    if env_json and env_json.strip().startswith("{"):
+        try:
+            d = json.loads(env_json)
+            if _validate_sa(d):
+                return d, None
+            return None, "GCP_CREDENTIALS_JSON env var is not a valid service account JSON."
+        except json.JSONDecodeError:
+            return None, "GCP_CREDENTIALS_JSON env var is not valid JSON."
+
+    path = os.environ.get("GCP_CREDENTIALS_PATH")
+    if path:
+        p = path.strip().strip('"').strip("'")
+        if p and os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                if _validate_sa(d):
+                    return d, None
+                return None, "GCP_CREDENTIALS_PATH file is not a valid service account JSON."
+            except json.JSONDecodeError:
+                return None, "GCP_CREDENTIALS_PATH file is not valid JSON."
+        elif p:
+            return None, f"GCP_CREDENTIALS_PATH not found: {p}"
+
+    return None, "No GCP credentials: add GCP_CREDENTIALS_JSON to Streamlit Secrets (or GCP_CREDENTIALS_PATH locally)."
+
+
+def _secrets_cache_key():
+    """
+    Hash of secret values so @st.cache_data reloads after you fix Secrets in the dashboard.
+    """
+    h = hashlib.sha256()
+    if hasattr(st, 'secrets') and st.secrets:
+        for name in (
+            "GCP_CREDENTIALS_JSON",
+            "GCP_CREDENTIALS_PATH",
+            "GOOGLE_DRIVE_FOLDER_ID",
+            "GOOGLE_DRIVE_FOLDER_URL",
+            "PLA_CSV_URL",
+            "PCA_CSV_URL",
+        ):
+            v = st.secrets.get(name)
+            if v is None:
+                continue
+            if isinstance(v, dict):
+                h.update(json.dumps(v, sort_keys=True).encode("utf-8"))
+            else:
+                h.update(str(v).encode("utf-8"))
+    h.update(os.environ.get("GCP_CREDENTIALS_PATH", "").encode("utf-8"))
+    return h.hexdigest()
+
+
+def _read_csv_streaming(source, required_cols_lower, chunksize=None):
+    """
+    Stream large CSVs in chunks, apply marketplace / alpha_mp filters per chunk to cut memory.
+    source: file path (str) or readable buffer.
+    """
+    cs = chunksize or CSV_CHUNK_ROWS
+    usecols = lambda c: str(c).strip().lower() in required_cols_lower
+    common = dict(chunksize=cs, iterator=True, low_memory=False)
+    try:
+        reader = pd.read_csv(source, usecols=usecols, **common)
+    except Exception:
+        reader = pd.read_csv(source, **common)
+    parts = []
+    for chunk in reader:
+        chunk = _apply_source_filters(chunk)
+        if chunk is not None and not chunk.empty:
+            parts.append(chunk)
+    if not parts:
+        return pd.DataFrame()
+    return pd.concat(parts, ignore_index=True, sort=False)
+
+
 def _read_csv_optimized(buf, required_cols_lower):
-    """Read only useful columns when possible for faster large-file ingestion."""
+    """Single-pass read when file is small enough or chunking not needed."""
     try:
         return pd.read_csv(
             buf,
@@ -136,31 +279,68 @@ def _read_csv_optimized(buf, required_cols_lower):
             low_memory=False
         )
     except Exception:
-        # Fallback for malformed exports where header/usecols inference fails.
         return pd.read_csv(buf, low_memory=False)
+
+
+def _ingest_csv_bytes(data: bytes, required_cols_lower):
+    """Parse CSV bytes with chunked streaming; spill to temp file to avoid huge RAM copies."""
+    if not data:
+        return pd.DataFrame()
+    path = None
+    try:
+        fd, path = tempfile.mkstemp(suffix=".csv")
+        os.close(fd)
+        with open(path, "wb") as f:
+            f.write(data)
+        return _read_csv_streaming(path, required_cols_lower)
+    finally:
+        if path and os.path.isfile(path):
+            try:
+                os.unlink(path)
+            except Exception:
+                pass
+
+
+def _downcast_groupby_strings(df):
+    """Reduce memory for repeated dimension columns used in groupby."""
+    if df is None or df.empty:
+        return df
+    out = df
+    for c in ("brand", "business_unit", "analytic_super_category", "super_category", "page_context", "slot_type", "page_type"):
+        if c in out.columns and out[c].dtype == object:
+            try:
+                out[c] = out[c].astype("category")
+            except Exception:
+                pass
+    return out
 
 
 def _load_from_drive_api_by_name(folder_id, name_patterns, required_cols_lower):
     if not HAS_DRIVE_API:
         return None
     try:
-        creds_json = None
-        if hasattr(st, 'secrets') and st.secrets:
-            creds_json = st.secrets.get("GCP_CREDENTIALS_JSON")
-            if isinstance(creds_json, str):
-                import json
-                creds_json = json.loads(creds_json)
+        creds_json, _cred_err = _resolve_gcp_credentials()
         if not creds_json:
             return None
         creds = service_account.Credentials.from_service_account_info(
             creds_json, scopes=['https://www.googleapis.com/auth/drive.readonly'])
         service = build('drive', 'v3', credentials=creds)
-        results = service.files().list(
-            q=f"'{folder_id}' in parents and trashed = false",
-            fields="files(id, name, modifiedTime)"
-        ).execute()
+        all_files = []
+        page_token = None
+        while True:
+            req = service.files().list(
+                q=f"'{folder_id}' in parents and trashed = false",
+                fields="nextPageToken, files(id, name, modifiedTime)",
+                pageSize=1000,
+                pageToken=page_token,
+            )
+            results = req.execute()
+            all_files.extend(results.get('files', []))
+            page_token = results.get('nextPageToken')
+            if not page_token:
+                break
         matches = []
-        for f in results.get('files', []):
+        for f in all_files:
             name_l = str(f.get('name', '')).lower()
             if name_l.endswith('.csv') and all(p in name_l for p in name_patterns):
                 matches.append(f)
@@ -175,9 +355,12 @@ def _load_from_drive_api_by_name(folder_id, name_patterns, required_cols_lower):
                 while not downloader.next_chunk()[1]:
                     pass
                 buf.seek(0)
-                df = _read_csv_optimized(buf, required_cols_lower)
-                df['_source_file'] = f.get('name', '')
-                frames.append(df)
+                raw = buf.getvalue()
+                df = _ingest_csv_bytes(raw, required_cols_lower)
+                if df is not None and not df.empty:
+                    df = df.copy()
+                    df['_source_file'] = f.get('name', '')
+                    frames.append(df)
             except Exception:
                 continue
         if not frames:
@@ -276,54 +459,75 @@ def _apply_source_filters(df):
     return out
 
 @st.cache_data
-def load_pla_data():
+def load_pla_data(_secrets_key: str):
     folder_id = st.secrets.get("GOOGLE_DRIVE_FOLDER_ID") if hasattr(st, 'secrets') and st.secrets else None
     if not folder_id and hasattr(st, 'secrets') and st.secrets.get("GOOGLE_DRIVE_FOLDER_URL"):
         m = re.search(r'/folders/([a-zA-Z0-9_-]+)', str(st.secrets.get("GOOGLE_DRIVE_FOLDER_URL", "")))
         folder_id = m.group(1) if m else None
+    creds, cred_err = _resolve_gcp_credentials()
     if folder_id:
-        # Prefer all PLA CSVs in the folder so old and new naming conventions both work.
-        df = _load_from_drive_api_by_name(folder_id, ['pla'], PLA_REQUIRED_COLS_LOWER)
-        if df is not None:
-            return _process_pla_df(df)
+        if not creds:
+            if cred_err:
+                st.error(cred_err)
+        else:
+            # Prefer all PLA CSVs in the folder so old and new naming conventions both work.
+            df = _load_from_drive_api_by_name(folder_id, ['pla'], PLA_REQUIRED_COLS_LOWER)
+            if df is not None:
+                return _process_pla_df(df)
     pla_url = st.secrets.get("PLA_CSV_URL") or st.secrets.get("PLA_FILE_ID") if hasattr(st, 'secrets') and st.secrets else None
     if pla_url:
         data = _download_from_google_drive(pla_url)
         if data:
-            return _process_pla_df(pd.read_csv(io.BytesIO(data)))
-    st.error("Google Drive not configured. Add GOOGLE_DRIVE_FOLDER_ID and GCP_CREDENTIALS_JSON to Streamlit Secrets.")
+            raw = _ingest_csv_bytes(data, PLA_REQUIRED_COLS_LOWER)
+            return _process_pla_df(raw)
+    st.error(
+        "Google Drive not configured or load failed. Set GOOGLE_DRIVE_FOLDER_ID (or URL) and valid "
+        "GCP_CREDENTIALS_JSON in Streamlit Secrets (JSON must be valid — use TOML triple quotes for multiline)."
+    )
     return None
 
 @st.cache_data
-def load_pca_data():
+def load_pca_data(_secrets_key: str):
     folder_id = st.secrets.get("GOOGLE_DRIVE_FOLDER_ID") if hasattr(st, 'secrets') and st.secrets else None
     if not folder_id and hasattr(st, 'secrets') and st.secrets.get("GOOGLE_DRIVE_FOLDER_URL"):
         m = re.search(r'/folders/([a-zA-Z0-9_-]+)', str(st.secrets.get("GOOGLE_DRIVE_FOLDER_URL", "")))
         folder_id = m.group(1) if m else None
+    creds, cred_err = _resolve_gcp_credentials()
     if folder_id:
-        # Prefer all PCA CSVs in the folder so old and new naming conventions both work.
-        df = _load_from_drive_api_by_name(folder_id, ['pca'], PCA_REQUIRED_COLS_LOWER)
-        if df is not None:
-            return _process_pca_df(df)
+        if not creds:
+            if cred_err:
+                st.error(cred_err)
+        else:
+            # Prefer all PCA CSVs in the folder so old and new naming conventions both work.
+            df = _load_from_drive_api_by_name(folder_id, ['pca'], PCA_REQUIRED_COLS_LOWER)
+            if df is not None:
+                return _process_pca_df(df)
     pca_url = st.secrets.get("PCA_CSV_URL") or st.secrets.get("PCA_FILE_ID") if hasattr(st, 'secrets') and st.secrets else None
     if pca_url:
         data = _download_from_google_drive(pca_url)
         if data:
-            return _process_pca_df(pd.read_csv(io.BytesIO(data)))
-    st.error("Google Drive not configured.")
+            raw = _ingest_csv_bytes(data, PCA_REQUIRED_COLS_LOWER)
+            return _process_pca_df(raw)
+    st.error("Google Drive not configured or PCA load failed.")
     return None
 
 @st.cache_data
-def load_pla_processed():
+def load_pla_processed(_secrets_key: str):
     """Load PLA and compute KPIs — cached (data is static)."""
-    df = load_pla_data()
-    return calculate_pla_kpis(df) if df is not None else None
+    df = load_pla_data(_secrets_key)
+    if df is None:
+        return None
+    out = calculate_pla_kpis(df)
+    return _downcast_groupby_strings(out)
 
 @st.cache_data
-def load_pca_processed():
+def load_pca_processed(_secrets_key: str):
     """Load PCA and compute KPIs — cached (data is static)."""
-    df = load_pca_data()
-    return calculate_pca_kpis(df) if df is not None else None
+    df = load_pca_data(_secrets_key)
+    if df is None:
+        return None
+    out = calculate_pca_kpis(df)
+    return _downcast_groupby_strings(out)
 
 # --- KPI CALCULATIONS ---
 def calculate_pla_kpis(df):
@@ -591,8 +795,9 @@ def _main():
     st.caption("For Internal Use Only")
     st.title("Spend Pulse — BSD Budget Optimizer")
 
-    pla_df = load_pla_processed()
-    pca_df = load_pca_processed()
+    _sk = _secrets_cache_key()
+    pla_df = load_pla_processed(_sk)
+    pca_df = load_pca_processed(_sk)
     if pla_df is None and pca_df is None:
         return
 
