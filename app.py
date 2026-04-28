@@ -316,12 +316,16 @@ def _downcast_groupby_strings(df):
 
 
 def _load_from_drive_api_by_name(folder_id, name_patterns, required_cols_lower):
+    """
+    Returns (dataframe or None, diagnostic_message or None).
+    diagnostic_message is safe to show (no secrets).
+    """
     if not HAS_DRIVE_API:
-        return None
+        return None, "Google API libraries missing (google-auth, google-api-python-client)."
     try:
-        creds_json, _cred_err = _resolve_gcp_credentials()
+        creds_json, cred_err = _resolve_gcp_credentials()
         if not creds_json:
-            return None
+            return None, cred_err or "GCP credentials missing."
         creds = service_account.Credentials.from_service_account_info(
             creds_json, scopes=['https://www.googleapis.com/auth/drive.readonly'])
         service = build('drive', 'v3', credentials=creds)
@@ -345,9 +349,13 @@ def _load_from_drive_api_by_name(folder_id, name_patterns, required_cols_lower):
             if name_l.endswith('.csv') and all(p in name_l for p in name_patterns):
                 matches.append(f)
         matches = sorted(matches, key=lambda x: str(x.get('name', '')).lower())
+        pat = " + ".join(name_patterns)
         if not matches:
-            return None
+            names_preview = ", ".join(str(x.get("name", "")) for x in all_files[:12])
+            hint = f"No CSV in folder matching names containing [{pat}]. Files seen: {names_preview or '(none — check folder ID and sharing with service account)'}"
+            return None, hint
         frames = []
+        ingest_errors = []
         for f in matches:
             try:
                 buf = io.BytesIO()
@@ -361,14 +369,20 @@ def _load_from_drive_api_by_name(folder_id, name_patterns, required_cols_lower):
                     df = df.copy()
                     df['_source_file'] = f.get('name', '')
                     frames.append(df)
-            except Exception:
+                elif df is not None and df.empty:
+                    ingest_errors.append(f"{f.get('name')}: 0 rows after marketplace/alpha_mp filters (or empty file)")
+            except Exception as ex:
+                ingest_errors.append(f"{f.get('name')}: {type(ex).__name__}")
                 continue
         if not frames:
-            return None
-        return pd.concat(frames, ignore_index=True, sort=False)
-    except Exception:
-        pass
-    return None
+            msg = "CSV files matched but no rows left after filtering. "
+            msg += "Try Secrets: APPLY_SOURCE_FILTERS = false to test. "
+            if ingest_errors:
+                msg += "Details: " + " | ".join(ingest_errors[:5])
+            return None, msg
+        return pd.concat(frames, ignore_index=True, sort=False), None
+    except Exception as ex:
+        return None, f"Drive API error: {type(ex).__name__}: {str(ex)[:200]}"
 
 def _download_from_google_drive(url_or_id):
     if not url_or_id or not isinstance(url_or_id, str):
@@ -439,9 +453,22 @@ def _get_col_by_lower(df, target_name):
     return None
 
 
+def _source_filters_enabled():
+    """Set APPLY_SOURCE_FILTERS = false in Streamlit Secrets to bypass (debug empty-data issues)."""
+    try:
+        if hasattr(st, 'secrets') and st.secrets:
+            v = st.secrets.get("APPLY_SOURCE_FILTERS", True)
+            return str(v).strip().lower() not in ("false", "0", "no", "off")
+    except Exception:
+        pass
+    return True
+
+
 def _apply_source_filters(df):
     """Apply global ingestion filters requested by business."""
     if df is None or df.empty:
+        return df
+    if not _source_filters_enabled():
         return df
 
     out = df.copy()
@@ -471,9 +498,11 @@ def load_pla_data(_secrets_key: str):
                 st.error(cred_err)
         else:
             # Prefer all PLA CSVs in the folder so old and new naming conventions both work.
-            df = _load_from_drive_api_by_name(folder_id, ['pla'], PLA_REQUIRED_COLS_LOWER)
+            df, drv_err = _load_from_drive_api_by_name(folder_id, ['pla'], PLA_REQUIRED_COLS_LOWER)
             if df is not None:
                 return _process_pla_df(df)
+            if drv_err:
+                st.warning(f"PLA Drive load: {drv_err}")
     pla_url = st.secrets.get("PLA_CSV_URL") or st.secrets.get("PLA_FILE_ID") if hasattr(st, 'secrets') and st.secrets else None
     if pla_url:
         data = _download_from_google_drive(pla_url)
@@ -499,9 +528,11 @@ def load_pca_data(_secrets_key: str):
                 st.error(cred_err)
         else:
             # Prefer all PCA CSVs in the folder so old and new naming conventions both work.
-            df = _load_from_drive_api_by_name(folder_id, ['pca'], PCA_REQUIRED_COLS_LOWER)
+            df, drv_err = _load_from_drive_api_by_name(folder_id, ['pca'], PCA_REQUIRED_COLS_LOWER)
             if df is not None:
                 return _process_pca_df(df)
+            if drv_err:
+                st.warning(f"PCA Drive load: {drv_err}")
     pca_url = st.secrets.get("PCA_CSV_URL") or st.secrets.get("PCA_FILE_ID") if hasattr(st, 'secrets') and st.secrets else None
     if pca_url:
         data = _download_from_google_drive(pca_url)
