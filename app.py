@@ -650,18 +650,61 @@ def get_phasing_for_bu_sc(business_unit, super_category):
         return [1.0 / len(BSD_DAYS)] * len(BSD_DAYS)
     return [a / total for a in adjusted]
 
-def calculate_traffic_phasing(base_volume, category_name, business_unit, base_curve_percentages=None):
-    pct = get_phasing_for_bu_sc(business_unit, category_name)
-    return pct, [base_volume * x for x in pct]
-
 def _super_category_sidebar_options(pla_df, pca_df):
-    """Union of PLA analytic_super_category and PCA super_category for one dropdown."""
+    """Union of PLA analytic_super_category and PCA super_category (all data)."""
     raw = []
     if pla_df is not None and not pla_df.empty and 'analytic_super_category' in pla_df.columns:
         raw.extend(pla_df['analytic_super_category'].dropna().astype(str).str.strip().tolist())
     if pca_df is not None and not pca_df.empty and 'super_category' in pca_df.columns:
         raw.extend(pca_df['super_category'].dropna().astype(str).str.strip().tolist())
     return ['All'] + sorted(set(x for x in raw if x))
+
+
+def _brand_options_for_bu(pla_df, pca_df, bu_col, sel_bu):
+    """Brands in scope: all rows if BU is All, else only rows matching selected BU (Power BI slicer behavior)."""
+    raw = []
+    for df in (pla_df, pca_df):
+        if df is None or df.empty or 'brand' not in df.columns:
+            continue
+        if sel_bu == 'All':
+            raw.extend(df['brand'].dropna().astype(str).str.strip().tolist())
+            continue
+        if not bu_col or bu_col not in df.columns:
+            continue
+        sub = df[df[bu_col].astype(str).str.strip() == str(sel_bu).strip()]
+        raw.extend(sub['brand'].dropna().astype(str).str.strip().tolist())
+    return sorted(set(x for x in raw if x))
+
+
+def _super_category_options_for_bu(pla_df, pca_df, bu_col, sel_bu):
+    """Super categories scoped to selected BU when BU ≠ All (cross-filter like Power BI)."""
+    if sel_bu == 'All' or not bu_col:
+        return _super_category_sidebar_options(pla_df, pca_df)
+    raw = []
+    for df in (pla_df, pca_df):
+        if df is None or df.empty or bu_col not in df.columns:
+            continue
+        sub = df[df[bu_col].astype(str).str.strip() == str(sel_bu).strip()]
+        if sub.empty:
+            continue
+        if 'analytic_super_category' in sub.columns:
+            raw.extend(sub['analytic_super_category'].dropna().astype(str).str.strip().tolist())
+        if 'super_category' in sub.columns:
+            raw.extend(sub['super_category'].dropna().astype(str).str.strip().tolist())
+    if not raw:
+        return ['All']
+    return ['All'] + sorted(set(x for x in raw if x))
+
+
+def _filter_options_by_search(options_with_all, query: str):
+    """Keep 'All' plus rows whose label contains query (case-insensitive)."""
+    if not query or not str(query).strip():
+        return options_with_all
+    q = str(query).strip().lower()
+    head = options_with_all[:1] if options_with_all and options_with_all[0] == 'All' else ['All']
+    rest = options_with_all[1:] if head == ['All'] else options_with_all
+    hit = [x for x in rest if q in str(x).lower()]
+    return head + hit
 
 
 def _apply_sc_filter(df, sel_sc):
@@ -683,115 +726,89 @@ def _apply_sc_filter(df, sel_sc):
     return out
 
 
-def _resolve_row_category(r, fmt):
-    """PLA uses analytic_super_category; PCA uses super_category. Avoid NaN truthiness bugs after concat."""
-    fmt_u = str(fmt).strip().upper()
-
-    def _clean(x):
-        if x is None:
-            return None
-        try:
-            if pd.isna(x):
-                return None
-        except Exception:
-            pass
-        try:
-            if isinstance(x, float) and np.isnan(x):
-                return None
-        except Exception:
-            pass
-        s = str(x).strip()
-        if not s or s.lower() in ('nan', 'none'):
-            return None
-        return s
-
-    if fmt_u == 'PCA':
-        c = _clean(r.get('super_category')) or _clean(r.get('analytic_super_category'))
+def _resolve_phasing_bu_sc(sel_bu, sel_sc, pla_f, pca_f):
+    """Pick one BU + super-category for the 8-day curve only (event-level phasing, not per placement)."""
+    if sel_sc != 'All':
+        sc = str(sel_sc).strip()
     else:
-        c = _clean(r.get('analytic_super_category')) or _clean(r.get('super_category'))
-    return c if c else 'Gaming'
+        sc = 'Gaming'
+        for df, col in ((pla_f, 'analytic_super_category'), (pca_f, 'super_category')):
+            if df is not None and not df.empty and col in df.columns:
+                m = df[col].dropna()
+                if not m.empty:
+                    sc = str(m.mode().iloc[0]).strip()
+                    break
+    if sel_bu != 'All':
+        bu = str(sel_bu).strip()
+    else:
+        bu = 'Electronics'
+        for df, col in ((pla_f, 'business_unit'), (pca_f, 'business_unit')):
+            if df is not None and not df.empty and col in df.columns:
+                m = df[col].dropna()
+                if not m.empty:
+                    bu = str(m.mode().iloc[0]).strip()
+                    break
+    bu = BU_ALIASES.get(bu, bu)
+    return bu, sc
 
 
-def _weighted_roi_band(combined):
-    """Indicative segment ROI spread (budget-weighted 25th / 75th), vs headline portfolio ROI."""
-    need = ['Expected_ROI', 'Recommended_Budget']
-    if combined is None or combined.empty or not all(c in combined.columns for c in need):
-        return None, None
-    sub = combined[(combined['Recommended_Budget'] > 0) & np.isfinite(combined['Expected_ROI'])].copy()
-    if sub.empty or len(sub) < 2:
-        return None, None
-    sub = sub.sort_values('Expected_ROI')
-    v = sub['Expected_ROI'].values.astype(float)
-    w = sub['Recommended_Budget'].values.astype(float)
-    cw = np.cumsum(w) / np.sum(w)
-    i25 = int(np.searchsorted(cw, 0.25, side='left'))
-    i75 = int(np.searchsorted(cw, 0.75, side='left'))
-    i25 = min(max(i25, 0), len(v) - 1)
-    i75 = min(max(i75, 0), len(v) - 1)
-    return float(v[i25]), float(v[i75])
-
-
-def _build_bu_lookup(df_pla, df_pca, bu_col, sc_col):
-    """Build (brand|category) -> BU mapping once. Returns dict for PLA and PCA."""
-    def _from_df(df):
-        if df is None or df.empty or bu_col not in df.columns or 'brand' not in df.columns:
-            return {}
-        sc = 'analytic_super_category' if 'analytic_super_category' in df.columns else 'super_category'
-        if sc not in df.columns:
-            return {}
-        sub = df[[bu_col, 'brand', sc]].dropna(subset=[bu_col])
-        sub = sub.assign(_key=sub['brand'].astype(str).str.strip() + '|' + sub[sc].astype(str).str.strip())
-        def _mode(x):
-            vc = x.value_counts()
-            return vc.index[0] if len(vc) > 0 else 'Electronics'
-        agg = sub.groupby('_key')[bu_col].agg(_mode)
-        return agg.to_dict()
-    return {'PLA': _from_df(df_pla), 'PCA': _from_df(df_pca)}
-
-def _compute_day_level_and_expand(allocation_df, sel_bu, bu_col, bu_lookup, include_pla_detail=True):
-    """Single pass: compute day-level budgets and expand to daily tables. Returns (day_phasing_df, daily_tables)."""
-    day_budgets = {d: {'PLA': 0.0, 'PCA': 0.0} for d in BSD_DAYS}
-    daily_rows = [[] for _ in BSD_DAYS]
-    cols = list(allocation_df.columns)
-    has_page_context = include_pla_detail and 'page_context' in allocation_df.columns
-    has_slot_type = include_pla_detail and 'slot_type' in allocation_df.columns
-    for row in allocation_df.itertuples(index=False):
-        try:
-            r = dict(zip(cols, row))
-            fmt = str(r.get('Format', 'PLA') or 'PLA')
-            budget = r.get('Recommended_Budget', r.get('Budget (₹)', 0))
-            if pd.isna(budget) or budget <= 0:
-                continue
-            budget = float(budget)
-            category = _resolve_row_category(r, fmt)
-            bu_val = str(sel_bu) if sel_bu != 'All' else bu_lookup.get(fmt, {}).get(str(r.get('brand', '')).strip() + '|' + category, 'Electronics')
-            phasing = get_phasing_for_bu_sc(bu_val, category)
-            for i, day in enumerate(BSD_DAYS):
-                day_budgets[day][fmt] += budget * phasing[i]
-                out = {'Day': BSD_DAYS[i], 'Format': fmt, 'Category': category}
-                if has_page_context:
-                    out['Page Context'] = str(r.get('page_context', ''))
-                if has_slot_type:
-                    out['Slot Type'] = str(r.get('slot_type', ''))
-                cp = r.get('CPC')
-                if cp is not None and pd.notna(cp) and np.isfinite(cp):
-                    out['CPC (₹)'] = round(float(cp), 4)
-                daily_rows[i].append(out)
-        except Exception:
-            continue
+def _day_level_pla_pca_spend(pla_budget: float, pca_budget: float, bu: str, sc: str) -> pd.DataFrame:
+    """Only ₹ plan you operate: total PLA and PCA event budgets split across 8 days (single phasing curve)."""
+    ph = get_phasing_for_bu_sc(bu, sc)
     rows = []
-    for day in BSD_DAYS:
-        pla_b, pca_b = day_budgets[day]['PLA'], day_budgets[day]['PCA']
-        tot = pla_b + pca_b
-        rows.append({'Day': day, 'PLA Spend (₹)': round(pla_b, 2), 'PCA Spend (₹)': round(pca_b, 2), 'Total Spend (₹)': round(tot, 2),
-                     'PLA %': f"{(pla_b/tot*100):.1f}%" if tot > 0 else "0%",
-                     'PCA %': f"{(pca_b/tot*100):.1f}%" if tot > 0 else "0%"})
-    daily_tables = [pd.DataFrame(dr) if dr else pd.DataFrame() for dr in daily_rows]
-    return pd.DataFrame(rows), daily_tables
+    for i, day in enumerate(BSD_DAYS):
+        pa = pla_budget * ph[i]
+        pc = pca_budget * ph[i]
+        tot = pa + pc
+        rows.append({
+            'Day': day,
+            'PLA Spend (₹)': round(pa, 2),
+            'PCA Spend (₹)': round(pc, 2),
+            'Total Spend (₹)': round(tot, 2),
+            'PLA %': f"{(pa / tot * 100):.1f}%" if tot > 0 else "0%",
+            'PCA %': f"{(pc / tot * 100):.1f}%" if tot > 0 else "0%",
+        })
+    return pd.DataFrame(rows)
 
 
-def _safe_divide(numerator, denominator):
-    return float(numerator) / float(denominator) if denominator else 0.0
+def _pla_cpc_guidance_table(pla_f) -> pd.DataFrame:
+    """Historical effective CPC by placement — bid / serving guidance only; does not assign ₹."""
+    if pla_f is None or pla_f.empty or 'spend' not in pla_f.columns or 'clicks' not in pla_f.columns:
+        return pd.DataFrame()
+    gcols = [c for c in ('brand', 'analytic_super_category', 'page_context', 'slot_type') if c in pla_f.columns]
+    if not gcols:
+        return pd.DataFrame()
+    a = pla_f.groupby(gcols, dropna=False).agg(spend=('spend', 'sum'), clicks=('clicks', 'sum')).reset_index()
+    a['CPC'] = np.where(a['clicks'] > 0, a['spend'] / a['clicks'], np.nan)
+    out = a[gcols + ['CPC']].rename(columns={
+        'brand': 'Brand',
+        'analytic_super_category': 'Category',
+        'page_context': 'Page Context',
+        'slot_type': 'Slot Type',
+        'CPC': 'CPC (₹)',
+    })
+    return out
+
+
+def _pca_cpc_guidance_table(pca_f) -> pd.DataFrame:
+    """Historical effective CPC by page type — bid guidance only."""
+    if pca_f is None or pca_f.empty or 'clicks' not in pca_f.columns:
+        return pd.DataFrame()
+    spend_col = 'adspend' if 'adspend' in pca_f.columns else ('ad_spend' if 'ad_spend' in pca_f.columns else None)
+    if not spend_col:
+        return pd.DataFrame()
+    gcols = [c for c in ('brand', 'super_category', 'page_type') if c in pca_f.columns]
+    if not gcols:
+        return pd.DataFrame()
+    a = pca_f.groupby(gcols, dropna=False).agg(spend=(spend_col, 'sum'), clicks=('clicks', 'sum')).reset_index()
+    a['CPC'] = np.where(a['clicks'] > 0, a['spend'] / a['clicks'], np.nan)
+    out = a[gcols + ['CPC']].rename(columns={
+        'brand': 'Brand',
+        'super_category': 'Category',
+        'page_type': 'Page Type',
+        'CPC': 'CPC (₹)',
+    })
+    return out
 
 
 def _rupee_columns_config(display_df):
@@ -830,102 +847,6 @@ def _dimensions_first_then_metrics(df):
     return df[dims + mets]
 
 
-def _pla_placement_sheet(df):
-    """PLA: dimensions first, CPC (₹) only — historical effective CPC at this grain."""
-    if df is None or df.empty:
-        return pd.DataFrame()
-    dim_order = ['brand', 'analytic_super_category', 'page_context', 'slot_type']
-    dims = [c for c in dim_order if c in df.columns]
-    if not dims or 'CPC' not in df.columns:
-        return pd.DataFrame()
-    out = df[dims + ['CPC']].copy()
-    out = out.rename(columns={
-        'brand': 'Brand',
-        'analytic_super_category': 'Category',
-        'page_context': 'Page Context',
-        'slot_type': 'Slot Type',
-        'CPC': 'CPC (₹)',
-    })
-    return out
-
-
-def _pca_placement_sheet(df):
-    """PCA: dimensions first, CPC (₹) only."""
-    if df is None or df.empty:
-        return pd.DataFrame()
-    dim_order = ['brand', 'super_category', 'page_type']
-    dims = [c for c in dim_order if c in df.columns]
-    if not dims or 'CPC' not in df.columns:
-        return pd.DataFrame()
-    out = df[dims + ['CPC']].copy()
-    out = out.rename(columns={
-        'brand': 'Brand',
-        'super_category': 'Category',
-        'page_type': 'Page Type',
-        'CPC': 'CPC (₹)',
-    })
-    return out
-
-
-# --- BUDGET OPTIMIZATION ---
-def optimize_budget(df, total_budget, data_type, kpi_col, group_cols_extra=None):
-    spend_col = 'spend' if data_type == 'pla' else ('adspend' if 'adspend' in df.columns else 'ad_spend')
-    views_col = 'total_views' if data_type == 'pla' else 'viewcount'
-    group_cols = ['brand', 'analytic_super_category'] if data_type == 'pla' else ['brand', 'super_category']
-    if group_cols_extra:
-        group_cols = group_cols + [c for c in group_cols_extra if c in df.columns]
-    if kpi_col not in df.columns:
-        kpi_col = 'Total_ROI'
-    # Aggregate sums for ratio metrics (never use mean of ratios — use sum(num)/sum(denom))
-    agg_d = {spend_col: 'sum'}
-    for c in ['clicks', views_col, 'Total_Revenue', 'Total_Units', 'direct_rev', 'indirect_rev', 'direct_units', 'indirect_units']:
-        if c in df.columns:
-            agg_d[c] = 'sum'
-    group_cols = [c for c in group_cols if c in df.columns]
-    if not group_cols:
-        return pd.DataFrame()
-    perf = df.groupby(group_cols).agg(agg_d).reset_index()
-    # Recompute ratio metrics from sums (correct aggregation)
-    if 'Total_Revenue' not in perf.columns:
-        perf['Total_Revenue'] = 0
-    if 'Total_Units' not in perf.columns:
-        perf['Total_Units'] = 0
-    if 'direct_rev' in perf.columns and 'indirect_rev' in perf.columns:
-        perf['Total_Revenue'] = perf['direct_rev'] + perf['indirect_rev']
-    if 'direct_units' in perf.columns and 'indirect_units' in perf.columns:
-        perf['Total_Units'] = perf['direct_units'] + perf['indirect_units']
-    perf['Total_ROI'] = np.where(perf[spend_col] > 0, perf['Total_Revenue'] / perf[spend_col], 0)
-    if 'direct_rev' in perf.columns:
-        perf['Direct_ROI'] = np.where(perf[spend_col] > 0, perf['direct_rev'] / perf[spend_col], 0)
-    if 'indirect_rev' in perf.columns:
-        perf['Indirect_ROI'] = np.where(perf[spend_col] > 0, perf['indirect_rev'] / perf[spend_col], 0)
-    if 'direct_units' in perf.columns:
-        perf['Direct_CVR'] = np.where(perf[spend_col] > 0, perf['direct_units'] / perf[spend_col], 0)
-    if 'indirect_units' in perf.columns:
-        perf['Indirect_CVR'] = np.where(perf[spend_col] > 0, perf['indirect_units'] / perf[spend_col], 0)
-    if 'clicks' in perf.columns and views_col in perf.columns:
-        perf['CTR'] = np.where(perf[views_col] > 0, perf['clicks'] / perf[views_col], 0)
-    if 'Total_Revenue' not in perf.columns:
-        perf['Total_Revenue'] = 0
-    if 'Total_Units' not in perf.columns:
-        perf['Total_Units'] = 0
-    kpi_val = perf[kpi_col] if kpi_col in perf.columns else perf['Total_ROI']
-    perf['Efficiency_Score'] = kpi_val * np.log1p(perf[spend_col])
-    perf['Efficiency_Score'] = perf['Efficiency_Score'].fillna(0)
-    if perf['Efficiency_Score'].max() > 0:
-        perf['Efficiency_Score'] = perf['Efficiency_Score'] / perf['Efficiency_Score'].max()
-    tot_eff = perf['Efficiency_Score'].sum()
-    perf['Recommended_Budget'] = (perf['Efficiency_Score'] / tot_eff * total_budget) if tot_eff > 0 else (total_budget / len(perf))
-    # ROI = Revenue / Spend. Expected revenue at historical efficiency.
-    perf['Expected_Revenue'] = np.where(perf[spend_col] > 0, perf['Total_Revenue'] / perf[spend_col] * perf['Recommended_Budget'], 0)
-    perf['Expected_ROI'] = np.where(perf['Recommended_Budget'] > 0, perf['Expected_Revenue'] / perf['Recommended_Budget'], 0)
-    # Effective CPC at placement (spend/clicks); scales linearly so target CPC under recommended budget matches this lever.
-    if 'clicks' in perf.columns:
-        perf['CPC'] = np.where(perf['clicks'] > 0, perf[spend_col] / perf['clicks'], np.nan)
-    else:
-        perf['CPC'] = np.nan
-    return perf.sort_values('Efficiency_Score', ascending=False)
-
 # --- MAIN ---
 def main():
     try:
@@ -958,10 +879,28 @@ def _main():
     bu_col_opt = 'business_unit' if 'business_unit' in df_ref.columns else ('analytic_vertical' if 'analytic_vertical' in df_ref.columns else None)
 
     st.sidebar.subheader("Filters")
-    sel_bu = st.sidebar.selectbox("BU", ['All'] + sorted(df_ref[bu_col_opt].dropna().astype(str).unique().tolist())) if bu_col_opt and bu_col_opt in df_ref.columns else 'All'
-    sel_brand = st.sidebar.selectbox("Brand", ['All'] + sorted(df_ref['brand'].dropna().astype(str).unique().tolist()))
-    sc_opts = _super_category_sidebar_options(pla_df, pca_df)
-    sel_sc = st.sidebar.selectbox("Super Category", sc_opts, key="sidebar_sc")
+    st.sidebar.caption("Pick **BU** first — Brand and Super Category lists narrow like Power BI.")
+    sel_bu = st.sidebar.selectbox(
+        "BU",
+        ['All'] + sorted(df_ref[bu_col_opt].dropna().astype(str).unique().tolist()),
+        key="sidebar_bu",
+    ) if bu_col_opt and bu_col_opt in df_ref.columns else 'All'
+
+    brand_base = ['All'] + _brand_options_for_bu(pla_df, pca_df, bu_col_opt, sel_bu)
+    st.sidebar.text_input("Search brand", placeholder="Type to narrow list…", key="search_brand_q")
+    brand_q = str(st.session_state.get("search_brand_q", "") or "")
+    brand_opts = _filter_options_by_search(brand_base, brand_q)
+    if len(brand_opts) <= 1:
+        brand_opts = brand_base
+    sel_brand = st.sidebar.selectbox("Brand", brand_opts, key=f"sidebar_brand_{sel_bu}")
+
+    sc_base = _super_category_options_for_bu(pla_df, pca_df, bu_col_opt, sel_bu)
+    st.sidebar.text_input("Search super category", placeholder="Type to narrow list…", key="search_sc_q")
+    sc_q = str(st.session_state.get("search_sc_q", "") or "")
+    sc_opts = _filter_options_by_search(sc_base, sc_q)
+    if len(sc_opts) <= 1:
+        sc_opts = sc_base
+    sel_sc = st.sidebar.selectbox("Super Category", sc_opts, key=f"sidebar_sc_{sel_bu}")
 
     def apply_filters(df):
         if df is None or df.empty:
@@ -982,8 +921,8 @@ def _main():
 
     st.markdown(f"### BSD day-level budget · {BSD_EVENT_LABEL}")
     st.caption(
-        "Primary output: **eight-day PLA vs PCA phasing**. Placement tables: **CPC (₹)** only "
-        "(effective historical spend ÷ clicks at slot/context or page type). ROI is **estimated** from segment mix."
+        "**Spend plan is only day × format (PLA vs PCA).** You do **not** set ₹ by slot/context or page type — "
+        "those rows show **CPC only** (historical effective CPC) so you can judge **whether** a bid can win that placement."
     )
 
     total_budget = st.number_input("Total event budget (₹)", min_value=10000, max_value=10000000, value=100000, step=10000, key='opt_budget')
@@ -991,81 +930,48 @@ def _main():
     pla_hist = pla_f['spend'].sum() if pla_f is not None and not pla_f.empty and 'spend' in pla_f.columns else 0
     pca_hist = pca_f['adspend'].sum() if pca_f is not None and not pca_f.empty and 'adspend' in pca_f.columns else 0
     tot_hist = pla_hist + pca_hist
+    pla_hist_rev = pla_f['Total_Revenue'].sum() if pla_f is not None and not pla_f.empty and 'Total_Revenue' in pla_f.columns else 0.0
+    pca_hist_rev = pca_f['Total_Revenue'].sum() if pca_f is not None and not pca_f.empty and 'Total_Revenue' in pca_f.columns else 0.0
+    hist_roi_blend = (pla_hist_rev + pca_hist_rev) / tot_hist if tot_hist > 0 else 0.0
     pla_share = pla_hist / tot_hist if tot_hist > 0 else 0.5
     pca_share = 1.0 - pla_share
     pla_budget = total_budget * pla_share
     pca_budget = total_budget * pca_share
 
     if st.button("Run day-level budget", type="primary", key='opt_btn'):
-        pla_res = pd.DataFrame()
-        pca_res = pd.DataFrame()
-        kpi_alloc = 'Total_ROI'
-        if pla_f is not None and not pla_f.empty and pla_budget > 0:
-            pla_res = optimize_budget(
-                pla_f, pla_budget, 'pla', kpi_alloc,
-                ['page_context', 'slot_type'] if all(c in pla_f.columns for c in ['page_context', 'slot_type']) else None,
-            )
-            if not pla_res.empty:
-                pla_res = pla_res.assign(Format='PLA')
-        if pca_f is not None and not pca_f.empty and pca_budget > 0:
-            pca_res = optimize_budget(
-                pca_f, pca_budget, 'pca', kpi_alloc,
-                ['page_type'] if 'page_type' in pca_f.columns else None,
-            )
-            if not pca_res.empty:
-                pca_res = pca_res.assign(Format='PCA')
-
-        results = [df for df in (pla_res, pca_res) if df is not None and not df.empty]
-        if not results:
-            st.warning("No allocation possible for current filters.")
+        if tot_hist <= 0:
+            st.warning("No historical spend in the current filter — widen filters or check data.")
         else:
-            combined = pd.concat(results, ignore_index=True)
-            total_rec = combined['Recommended_Budget'].sum()
-            total_rev = combined['Expected_Revenue'].sum()
-            total_rec_safe = total_rec if total_rec > 0 else 1
-            exp_roi = total_rev / total_rec_safe if total_rec_safe > 0 else 0.0
-            roi_lo, roi_hi = _weighted_roi_band(combined)
+            ph_bu, ph_sc = _resolve_phasing_bu_sc(sel_bu, sel_sc, pla_f, pca_f)
+            est_rev = total_budget * hist_roi_blend if hist_roi_blend > 0 else 0.0
 
             k1, k2, k3 = st.columns(3)
-            k1.metric("Event budget (₹)", f"{total_rec:,.0f}")
-            k2.metric("Est. portfolio ROI", f"{exp_roi:.2f}")
-            k3.metric("Est. revenue (₹)", f"{total_rev:,.0f}")
-            if roi_lo is not None and roi_hi is not None:
-                st.caption(
-                    f"**ROI range (indicative):** {roi_lo:.2f} – {roi_hi:.2f} "
-                    "(budget-weighted spread across placement segments; headline ROI can look high vs this band when a few strong placements dominate.)"
-                )
-
-            combined_copy = combined.copy()
-            bu_lookup = _build_bu_lookup(pla_f, pca_f, bu_col_opt, None) if sel_bu == 'All' else {}
+            k1.metric("Event budget (₹)", f"{total_budget:,.0f}")
+            k2.metric("Blended hist. ROI (sanity check)", f"{hist_roi_blend:.2f}")
+            k3.metric("If ROI holds · revenue (₹)", f"{est_rev:,.0f}")
+            st.caption(
+                f"Phasing curve uses **BU `{ph_bu}` × category `{ph_sc}`** (event-level). "
+                "ROI × budget is illustrative — CPC tables below do **not** allocate spend."
+            )
 
             st.divider()
-            st.markdown("#### 1 · Day-level PLA vs PCA budget")
-            st.caption("Eight-day curve from BU × category phasing (same total as event budget).")
-            try:
-                day_phasing_df, daily_tables = _compute_day_level_and_expand(
-                    combined_copy, sel_bu, bu_col_opt, bu_lookup
-                )
-                day_show = day_phasing_df.copy()
-                if not day_show.empty:
-                    day_show = _dimensions_first_then_metrics(day_show)
-                    cfg = _rupee_columns_config(day_show)
-                    dc = cfg if cfg else {}
-                    args = dict(use_container_width=True, hide_index=True)
-                    if dc:
-                        args['column_config'] = dc
-                    st.dataframe(day_show, **args)
-            except Exception as e:
-                st.warning(f"Day-level split failed: {e}")
-                day_phasing_df = pd.DataFrame()
-                daily_tables = []
+            st.markdown("#### 1 · Day-level PLA vs PCA spend (only ₹ plan)")
+            st.caption("Totals match your event budget; split between PLA/PCA from historical mix, then across 8 days from phasing.")
+            day_show = _day_level_pla_pca_spend(pla_budget, pca_budget, ph_bu, ph_sc)
+            if not day_show.empty:
+                day_show = _dimensions_first_then_metrics(day_show)
+                cfg = _rupee_columns_config(day_show)
+                args = dict(use_container_width=True, hide_index=True)
+                if cfg:
+                    args['column_config'] = cfg
+                st.dataframe(day_show, **args)
 
             st.divider()
-            st.markdown("#### 2 · PLA · CPC by placement")
-            st.caption("**Page Context × Slot Type** — **CPC (₹)** only (historical effective CPC at this grain).")
-            pla_sheet = _pla_placement_sheet(pla_res)
+            st.markdown("#### 2 · PLA · CPC reference (slot × context)")
+            st.caption("Spend ÷ clicks in filtered history — **bid / serving only**, not a budget split.")
+            pla_sheet = _pla_cpc_guidance_table(pla_f)
             if pla_sheet.empty:
-                st.info("No PLA rows (filters or missing page_context/slot_type).")
+                st.info("No PLA CPC breakdown (missing spend/clicks or placement columns).")
             else:
                 ps = _dimensions_first_then_metrics(pla_sheet.round(4))
                 cfg = _rupee_columns_config(ps)
@@ -1074,11 +980,11 @@ def _main():
                     args['column_config'] = cfg
                 st.dataframe(ps, **args)
 
-            st.markdown("#### 3 · PCA · CPC by placement")
-            st.caption("**Page Type** grain — **CPC (₹)** only.")
-            pca_sheet = _pca_placement_sheet(pca_res)
+            st.markdown("#### 3 · PCA · CPC reference (page type)")
+            st.caption("Same — **CPC only** for whether traffic can serve at that page type.")
+            pca_sheet = _pca_cpc_guidance_table(pca_f)
             if pca_sheet.empty:
-                st.info("No PCA rows.")
+                st.info("No PCA CPC breakdown.")
             else:
                 zs = _dimensions_first_then_metrics(pca_sheet.round(4))
                 cfg = _rupee_columns_config(zs)
@@ -1086,21 +992,6 @@ def _main():
                 if cfg:
                     args['column_config'] = cfg
                 st.dataframe(zs, **args)
-
-            detail_parts = []
-            for i, day_name in enumerate(BSD_DAYS):
-                if i < len(daily_tables) and daily_tables[i] is not None and not daily_tables[i].empty:
-                    chunk = daily_tables[i].copy()
-                    chunk.insert(0, "Day", day_name)
-                    detail_parts.append(chunk)
-            if detail_parts:
-                with st.expander("Optional · same CPC rows repeated across event days (for calendar planning)", expanded=False):
-                    det = _dimensions_first_then_metrics(pd.concat(detail_parts, ignore_index=True))
-                    cfg_d = _rupee_columns_config(det)
-                    kw = dict(use_container_width=True, hide_index=True)
-                    if cfg_d:
-                        kw['column_config'] = cfg_d
-                    st.dataframe(det.fillna(""), **kw)
 
 if __name__ == "__main__":
     main()
