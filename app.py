@@ -1404,7 +1404,8 @@ def _main():
     tot_hist = pla_hist + pca_hist
     pla_hist_rev = pla_f['Total_Revenue'].sum() if pla_f is not None and not pla_f.empty and 'Total_Revenue' in pla_f.columns else 0.0
     pca_hist_rev = pca_f['Total_Revenue'].sum() if pca_f is not None and not pca_f.empty and 'Total_Revenue' in pca_f.columns else 0.0
-    hist_roi_blend = (pla_hist_rev + pca_hist_rev) / tot_hist if tot_hist > 0 else 0.0
+    # Conservative expected ROI: realized revenue / realized spend on current filter (no uplift).
+    expected_roi_conservative = (pla_hist_rev + pca_hist_rev) / tot_hist if tot_hist > 0 else 0.0
     pla_share = pla_hist / tot_hist if tot_hist > 0 else 0.5
     pca_share = 1.0 - pla_share
     pla_budget = total_budget * pla_share
@@ -1415,15 +1416,15 @@ def _main():
             st.warning("No historical spend in the current filter — widen filters or check data.")
         else:
             ph_bu, ph_sc = _resolve_phasing_bu_sc(sel_bu, sel_sc, pla_f, pca_f)
-            est_rev = total_budget * hist_roi_blend if hist_roi_blend > 0 else 0.0
+            est_rev = total_budget * expected_roi_conservative if expected_roi_conservative > 0 else 0.0
 
             k1, k2, k3 = st.columns(3)
             k1.metric("Event budget (₹)", f"{total_budget:,.0f}")
-            k2.metric("Blended historical ROI", f"{hist_roi_blend:.2f}")
-            k3.metric("Illustrative revenue at blended ROI (₹)", f"{est_rev:,.0f}")
+            k2.metric("Expected ROI (conservative)", f"{expected_roi_conservative:.2f}")
+            k3.metric("Illustrative revenue at expected ROI (₹)", f"{est_rev:,.0f}")
             st.caption(
                 f"Phasing uses **BU `{ph_bu}` × category `{ph_sc}`** at event level. "
-                "Revenue is illustrative from blended ROI; CPC tables do not allocate spend."
+                "**Expected ROI (conservative)** is historical revenue ÷ historical spend on this filter — illustrative revenue applies it to the event budget; CPC tables do not allocate spend."
             )
 
             st.divider()
