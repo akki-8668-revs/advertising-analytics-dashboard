@@ -10,6 +10,7 @@ import hashlib
 import functools
 import tempfile
 import warnings
+from collections import Counter, defaultdict
 warnings.filterwarnings('ignore')
 
 try:
@@ -102,6 +103,8 @@ DOW_MULTIPLIERS = {
 
 URGENCY_CATEGORIES = frozenset(['Gaming', 'LaptopAndDesktop', 'RestOfMobileAccessory', 'PowerBank', 'MobileProtection'])
 DELIBERATION_CATEGORIES = frozenset(['AirConditioner', 'Refrigerator', 'HomeEntertainmentLarge', 'WashingMachineDryer', 'LargeAppliances'])
+URGENCY_CATEGORIES_CF = frozenset(x.casefold() for x in URGENCY_CATEGORIES)
+DELIBERATION_CATEGORIES_CF = frozenset(x.casefold() for x in DELIBERATION_CATEGORIES)
 
 BU_ALIASES = {
     'Large': 'LargeAppliances',
@@ -624,25 +627,136 @@ def calculate_pca_kpis(df):
     df['Total_Units'] = df['direct_units'] + df['indirect_units']
     return df
 
+
+def _canonical_map_most_frequent(values):
+    """
+    One display label per case-insensitive group: the spelling that appears most often
+    in the feed (ties → lexicographically smallest for stable UI).
+    """
+    buckets = defaultdict(list)
+    for v in values:
+        s = str(v).strip()
+        if not s:
+            continue
+        buckets[s.casefold()].append(s)
+    out = {}
+    for cf, variants in buckets.items():
+        cnt = Counter(variants)
+        best = min(cnt.keys(), key=lambda k: (-cnt[k], k))
+        out[cf] = best
+    return out
+
+
+def _collect_brand_values(pla_df, pca_df):
+    raw = []
+    for df in (pla_df, pca_df):
+        if df is None or df.empty or 'brand' not in df.columns:
+            continue
+        raw.extend(df['brand'].dropna().astype(str).str.strip().tolist())
+    return raw
+
+
+def _collect_super_category_values(pla_df, pca_df):
+    raw = []
+    if pla_df is not None and not pla_df.empty and 'analytic_super_category' in pla_df.columns:
+        raw.extend(pla_df['analytic_super_category'].dropna().astype(str).str.strip().tolist())
+    if pca_df is not None and not pca_df.empty and 'super_category' in pca_df.columns:
+        raw.extend(pca_df['super_category'].dropna().astype(str).str.strip().tolist())
+    return raw
+
+
+def _map_dim_series(series, mmap):
+    if mmap is None or not len(mmap):
+        return series
+
+    def one(x):
+        if pd.isna(x):
+            return x
+        t = str(x).strip()
+        if not t:
+            return x
+        return mmap.get(t.casefold(), t)
+
+    return series.astype(object).map(one)
+
+
+def _apply_brand_map(df, brand_map):
+    if df is None or df.empty or 'brand' not in df.columns or not brand_map:
+        return df
+    out = df.copy()
+    out['brand'] = _map_dim_series(out['brand'], brand_map)
+    return out
+
+
+def _apply_sc_maps(df, sc_map):
+    if df is None or df.empty or not sc_map:
+        return df
+    out = df.copy()
+    if 'analytic_super_category' in out.columns:
+        out['analytic_super_category'] = _map_dim_series(out['analytic_super_category'], sc_map)
+    if 'super_category' in out.columns:
+        out['super_category'] = _map_dim_series(out['super_category'], sc_map)
+    return out
+
+
+def _apply_col_map(df, col, mmap):
+    if df is None or df.empty or col not in df.columns or not mmap:
+        return df
+    out = df.copy()
+    out[col] = _map_dim_series(out[col], mmap)
+    return out
+
+
+def normalize_pla_pca_shared_labels(pla_df, pca_df):
+    """
+    Align brand, super category, and BU spellings across PLA and PCA so filters and
+    aggregations do not treat Case, CASE, and case as different entities.
+    """
+    bmap = _canonical_map_most_frequent(_collect_brand_values(pla_df, pca_df))
+    smap = _canonical_map_most_frequent(_collect_super_category_values(pla_df, pca_df))
+    pla_df = _apply_brand_map(pla_df, bmap)
+    pca_df = _apply_brand_map(pca_df, bmap)
+    pla_df = _apply_sc_maps(pla_df, smap)
+    pca_df = _apply_sc_maps(pca_df, smap)
+    for col in ('business_unit', 'analytic_vertical'):
+        raw = []
+        for df in (pla_df, pca_df):
+            if df is not None and not df.empty and col in df.columns:
+                raw.extend(df[col].dropna().astype(str).str.strip().tolist())
+        if not raw:
+            continue
+        mmap = _canonical_map_most_frequent(raw)
+        pla_df = _apply_col_map(pla_df, col, mmap)
+        pca_df = _apply_col_map(pca_df, col, mmap)
+    return pla_df, pca_df
+
+
 # --- TRAFFIC PHASING ---
-@functools.lru_cache(maxsize=256)
+@functools.lru_cache(maxsize=512)
 def get_phasing_for_bu_sc(business_unit, super_category):
     bu_raw = str(business_unit).strip()
     bu = BU_ALIASES.get(bu_raw, bu_raw)
-    sc = str(super_category).strip()
-    key = (bu, sc)
-    if key in PHASING_DATA:
+    sc_raw = str(super_category).strip()
+    key = (bu, sc_raw)
+    if key not in PHASING_DATA:
+        key = None
+        for (kbu, ksc) in PHASING_DATA:
+            if kbu == bu and ksc.casefold() == sc_raw.casefold():
+                key = (kbu, ksc)
+                break
+    if key is not None and key in PHASING_DATA:
         base_curve = PHASING_DATA[key]
     else:
         base_curve = BU_BASE_CURVES.get(bu, [1.0 / len(BSD_DAYS)] * len(BSD_DAYS))
 
+    sc_cf = sc_raw.casefold()
     adjusted = []
     for i, day in enumerate(BSD_DAYS):
         dow = day[:3]
         multiplier = DOW_MULTIPLIERS.get(dow, 1.0)
-        if sc in URGENCY_CATEGORIES and dow in ('Fri', 'Sat'):
+        if sc_cf in URGENCY_CATEGORIES_CF and dow in ('Fri', 'Sat'):
             multiplier *= 1.10
-        elif sc in DELIBERATION_CATEGORIES and dow in ('Mon', 'Tue', 'Wed'):
+        elif sc_cf in DELIBERATION_CATEGORIES_CF and dow in ('Mon', 'Tue', 'Wed'):
             multiplier *= 1.05
         adjusted.append(base_curve[i] * multiplier)
     total = sum(adjusted)
@@ -717,15 +831,15 @@ def _apply_sc_filter(df, sel_sc):
     out = df.copy()
     has_pla_sc = 'analytic_super_category' in out.columns
     has_pca_sc = 'super_category' in out.columns
+    sc_cf = str(sel_sc).strip().casefold()
     if has_pla_sc and has_pca_sc:
-        m = (out['analytic_super_category'].astype(str).str.strip() == sel_sc) | (
-            out['super_category'].astype(str).str.strip() == sel_sc
-        )
-        out = out.loc[m]
+        a = out['analytic_super_category'].astype(str).str.strip().str.casefold() == sc_cf
+        b = out['super_category'].astype(str).str.strip().str.casefold() == sc_cf
+        out = out.loc[a | b]
     elif has_pla_sc:
-        out = out[out['analytic_super_category'].astype(str).str.strip() == sel_sc]
+        out = out[out['analytic_super_category'].astype(str).str.strip().str.casefold() == sc_cf]
     elif has_pca_sc:
-        out = out[out['super_category'].astype(str).str.strip() == sel_sc]
+        out = out[out['super_category'].astype(str).str.strip().str.casefold() == sc_cf]
     return out
 
 
@@ -756,7 +870,7 @@ def _resolve_phasing_bu_sc(sel_bu, sel_sc, pla_f, pca_f):
 
 
 def _day_level_pla_pca_spend(pla_budget: float, pca_budget: float, bu: str, sc: str) -> pd.DataFrame:
-    """Only ₹ plan you operate: total PLA and PCA event budgets split across 8 days (single phasing curve)."""
+    """Split total PLA and PCA event budgets across the 8 event days using one phasing curve."""
     ph = get_phasing_for_bu_sc(bu, sc)
     rows = []
     for i, day in enumerate(BSD_DAYS):
@@ -865,6 +979,8 @@ def _main():
     _sk = _secrets_cache_key()
     pla_df = load_pla_processed(_sk)
     pca_df = load_pca_processed(_sk)
+    if pla_df is not None or pca_df is not None:
+        pla_df, pca_df = normalize_pla_pca_shared_labels(pla_df, pca_df)
     if pla_df is None and pca_df is None:
         return
 
@@ -945,7 +1061,8 @@ def _main():
         if bu_col_opt and bu_col_opt in out.columns and sel_bu != 'All':
             out = out[out[bu_col_opt].astype(str).str.strip() == sel_bu]
         if sel_brand != 'All':
-            out = out[out['brand'].astype(str).str.strip() == sel_brand]
+            b_cf = str(sel_brand).strip().casefold()
+            out = out[out['brand'].astype(str).str.strip().str.casefold() == b_cf]
         out = _apply_sc_filter(out, sel_sc)
         return out
 
