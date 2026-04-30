@@ -868,13 +868,304 @@ def _resolve_phasing_bu_sc(sel_bu, sel_sc, pla_f, pca_f):
     return bu, sc
 
 
-def _day_level_pla_pca_spend(pla_budget: float, pca_budget: float, bu: str, sc: str) -> pd.DataFrame:
-    """Split total PLA and PCA event budgets across the 8 event days using one phasing curve."""
+_BSD_DOW_PREFIX_TO_DAYOFWEEK = {
+    'Mon': 0, 'Tue': 1, 'Wed': 2, 'Thu': 3, 'Fri': 4, 'Sat': 5, 'Sun': 6,
+}
+
+# --- Day-level PLA share model (event windows + weekday + robust stats) ---
+_EVENT_WINDOW_LEN = 8
+# Prefer windows whose calendar matches retail events (May) or Fri-aligned starts.
+_WEIGHT_FRIDAY_START = 2.0
+_WEIGHT_MAY_WINDOW = 1.5
+_MIN_SAMPLES_FULL_TRUST = 5
+_BLEND_SATURATION_SAMPLES = 6.0
+
+
+def _weekday_index_from_bsd_label(day_label: str) -> int:
+    tok = str(day_label).split()[0]
+    return _BSD_DOW_PREFIX_TO_DAYOFWEEK.get(tok, 0)
+
+
+def _daily_pla_pca_frame(pla_f, pca_f):
+    """One row per calendar day: aligned PLA spend, PCA spend, total."""
+    pla_s = pd.Series(dtype=np.float64)
+    if pla_f is not None and not pla_f.empty and 'day_date' in pla_f.columns and 'spend' in pla_f.columns:
+        dd = pd.to_datetime(pla_f['day_date'], errors='coerce')
+        m = dd.notna()
+        if m.any():
+            pla_s = (
+                pla_f.loc[m]
+                .assign(_d=dd.loc[m].dt.normalize())
+                .groupby('_d', observed=True)['spend']
+                .sum()
+            )
+    pca_s = pd.Series(dtype=np.float64)
+    spend_col = 'adspend' if pca_f is not None and not pca_f.empty and 'adspend' in pca_f.columns else None
+    if spend_col and 'day_date' in pca_f.columns:
+        dd = pd.to_datetime(pca_f['day_date'], errors='coerce')
+        m = dd.notna()
+        if m.any():
+            pca_s = (
+                pca_f.loc[m]
+                .assign(_d=dd.loc[m].dt.normalize())
+                .groupby('_d', observed=True)[spend_col]
+                .sum()
+            )
+    if pla_s.empty and pca_s.empty:
+        return pd.DataFrame(columns=['date', 'pla', 'pca', 'total', 'ratio'])
+
+    all_ix = pla_s.index.union(pca_s.index).sort_values()
+    rows = []
+    for d in all_ix:
+        p = float(pla_s.get(d, 0.0) or 0.0)
+        c = float(pca_s.get(d, 0.0) or 0.0)
+        tot = p + c
+        ratio = (p / tot) if tot > 1e-12 else np.nan
+        rows.append({'date': pd.Timestamp(d).normalize(), 'pla': p, 'pca': c, 'total': tot, 'ratio': ratio})
+    return pd.DataFrame(rows)
+
+
+def _winsorized_median(vals, lo_q=0.05, hi_q=0.95):
+    """Median after mild winsorization to limit single-day spikes."""
+    x = np.asarray(vals, dtype=float)
+    x = x[np.isfinite(x)]
+    if x.size == 0:
+        return np.nan
+    if x.size >= 5:
+        lo, hi = np.quantile(x, lo_q), np.quantile(x, hi_q)
+        x = np.clip(x, lo, hi)
+    return float(np.median(x))
+
+
+def _gather_event_window_pla_ratio_samples(df_daily: pd.DataFrame):
+    """
+    For each BSD event-day index 0..7, collect PLA/(PLA+PCA) samples.
+
+    Only **Friday-started** 8-day blocks are used so index k matches the real calendar
+    shape (Fri→…→Fri), same as BSD_DAYS. May-heavy windows get extra weight.
+    """
+    empty = {i: [] for i in range(_EVENT_WINDOW_LEN)}
+    if df_daily is None or df_daily.empty or len(df_daily) < _EVENT_WINDOW_LEN:
+        return empty
+
+    df = df_daily.sort_values('date').drop_duplicates(subset=['date'], keep='last').copy()
+    df['date'] = pd.to_datetime(df['date']).dt.normalize()
+    idx = df.set_index('date')
+    if len(idx) < _EVENT_WINDOW_LEN:
+        return empty
+
+    med_tot = float(idx['total'].median()) if len(idx) else 0.0
+    q10 = float(idx['total'].quantile(0.1)) if len(idx) >= 5 else med_tot
+    # Lenient floor so Friday windows survive on trimmed extracts; skip only truly dead weeks
+    min_window_tot = max(
+        med_tot * 0.05,
+        q10 * 0.45,
+        float(idx['total'].sum()) / max(len(idx), 1) * 0.12,
+        1.0,
+    )
+
+    start = idx.index.min()
+    end_last = idx.index.max()
+    samples = {i: [] for i in range(_EVENT_WINDOW_LEN)}
+
+    one_day = pd.Timedelta(days=1)
+    d = start
+    while d + one_day * (_EVENT_WINDOW_LEN - 1) <= end_last:
+        # Align with May BSD: eight consecutive days starting Friday only (index k = offset).
+        if d.weekday() != 4:
+            d += one_day
+            continue
+        days = [d + one_day * k for k in range(_EVENT_WINDOW_LEN)]
+        if not all(x in idx.index for x in days):
+            d += one_day
+            continue
+        win_tot = float(sum(float(idx.loc[x, 'total']) for x in days))
+        if win_tot < min_window_tot:
+            d += one_day
+            continue
+
+        in_may = sum(1 for x in days if x.month == 5) >= 4
+        w_m = _WEIGHT_MAY_WINDOW if in_may else 1.0
+        w = _WEIGHT_FRIDAY_START * w_m
+
+        for k in range(_EVENT_WINDOW_LEN):
+            row = idx.loc[days[k]]
+            tot = float(row['total'])
+            if tot > 1e-12:
+                r = float(row['pla']) / tot
+                r = float(np.clip(r, 0.02, 0.98))
+                for _ in range(max(1, int(round(w)))):
+                    samples[k].append(r)
+        d += one_day
+
+    return samples
+
+
+def _weekday_median_ratio_from_daily(df_daily: pd.DataFrame):
+    """
+    Per calendar day ratio, then median by weekday (robust vs aggregate sum/sum).
+    Returns dict 0..6 -> float; empty dict if unusable.
+    """
+    if df_daily is None or df_daily.empty:
+        return {}
+    out = {}
+    dfc = df_daily[df_daily['total'] > 1e-12].copy()
+    if dfc.empty:
+        return {}
+    dfc['_dow'] = pd.to_datetime(dfc['date']).dt.dayofweek
+    for wd, sub in dfc.groupby('_dow', observed=True):
+        rats = sub['ratio'].replace([np.inf, -np.inf], np.nan).dropna()
+        if len(rats) == 0:
+            continue
+        out[int(wd)] = _winsorized_median(rats.values)
+    return out
+
+
+def _volume_weighted_pla_share_by_weekday(df_daily: pd.DataFrame):
+    """
+    Σ PLA / Σ (PLA+PCA) within each weekday — differs from median-of-daily-ratios when
+    intra-day mix shifts; gives distinct targets per DOW when behaviour differs by weekday.
+    """
+    if df_daily is None or df_daily.empty:
+        return {}
+    dfc = df_daily[df_daily['total'] > 1e-12].copy()
+    if dfc.empty:
+        return {}
+    dfc['_dow'] = pd.to_datetime(dfc['date']).dt.dayofweek
+    out = {}
+    for wd, sub in dfc.groupby('_dow', observed=True):
+        p = float(sub['pla'].sum())
+        t = float(sub['total'].sum())
+        if t > 1e-12:
+            out[int(wd)] = float(np.clip(p / t, 0.02, 0.98))
+    return out
+
+
+def _weekend_weekday_ratios_from_daily(df_daily: pd.DataFrame):
+    """Median PLA share on Sat/Sun vs Mon–Fri (captures weekend-heavy behaviour)."""
+    if df_daily is None or df_daily.empty:
+        return None, None
+    dfc = df_daily[df_daily['total'] > 1e-12].copy()
+    if dfc.empty:
+        return None, None
+    dfc['_dow'] = pd.to_datetime(dfc['date']).dt.dayofweek
+    we = dfc['_dow'].isin((5, 6))
+    wd = ~we
+    r_we = dfc.loc[we, 'ratio'].dropna()
+    r_wd = dfc.loc[wd, 'ratio'].dropna()
+    m_we = _winsorized_median(r_we.values) if len(r_we) else None
+    m_wd = _winsorized_median(r_wd.values) if len(r_wd) else None
+    return m_we, m_wd
+
+
+def _pla_fraction_per_event_day_from_history(pla_f, pca_f):
+    """
+    Build one PLA/(PLA+PCA) target per BSD row using, in order of priority:
+
+    1) Sliding 8-day windows in aligned daily history (event-day index 0 = day 1 of window),
+       with robust median per index and Friday/May weighting.
+    2) Blend with weekday medians (per-day ratios → median by DOW) when sample counts are low.
+    3) Blend with weekend vs weekday global medians for Sat/Sun rows when helpful.
+
+    Calibrated later so sum_i ph[i]*q[i] = overall pla_share. Returns None only if no usable history.
+    """
+    df_daily = _daily_pla_pca_frame(pla_f, pca_f)
+    if df_daily.empty or not (df_daily['total'] > 1e-12).any():
+        return None
+
+    global_ratio = _winsorized_median(df_daily.loc[df_daily['total'] > 1e-12, 'ratio'].dropna().values)
+    if not np.isfinite(global_ratio):
+        global_ratio = 0.5
+
+    samples = _gather_event_window_pla_ratio_samples(df_daily)
+    wd_med = _weekday_median_ratio_from_daily(df_daily)
+    vol_wd = _volume_weighted_pla_share_by_weekday(df_daily)
+    m_we, m_wd = _weekend_weekday_ratios_from_daily(df_daily)
+
+    q_out = []
+    for i, lab in enumerate(BSD_DAYS):
+        dow = _weekday_index_from_bsd_label(lab)
+        smps = samples.get(i, [])
+        n_raw = len(smps)
+        q_ev = _winsorized_median(smps) if n_raw else np.nan
+
+        q_wd = wd_med.get(dow)
+        if q_wd is None or not np.isfinite(q_wd):
+            q_wd = global_ratio
+
+        alpha = min(1.0, n_raw / _BLEND_SATURATION_SAMPLES) if n_raw else 0.0
+        if n_raw >= _MIN_SAMPLES_FULL_TRUST:
+            alpha = 1.0
+
+        base_ev = q_ev if np.isfinite(q_ev) else q_wd
+        q_blend = alpha * base_ev + (1.0 - alpha) * q_wd
+
+        if dow in (5, 6) and m_we is not None and np.isfinite(m_we) and n_raw < _MIN_SAMPLES_FULL_TRUST:
+            q_blend = 0.65 * q_blend + 0.35 * m_we
+        elif dow not in (5, 6) and m_wd is not None and np.isfinite(m_wd) and n_raw < _MIN_SAMPLES_FULL_TRUST:
+            q_blend = 0.65 * q_blend + 0.35 * m_wd
+
+        q_blend = float(np.clip(q_blend, 0.02, 0.98))
+
+        # Anchor by ΣPLA/Σtotal per weekday — if missing, every row fell back to the same
+        # global_ratio → calibration forces identical daily % (what users saw as flat 91.1%).
+        q_vol = vol_wd.get(dow)
+        if q_vol is None or not np.isfinite(q_vol):
+            q_vol = global_ratio
+        q_mix = 0.40 * q_blend + 0.60 * q_vol
+        q_out.append(float(np.clip(q_mix, 0.02, 0.98)))
+
+    spread = float(np.ptp(q_out)) if q_out else 0.0
+    if spread < 5e-4 and vol_wd:
+        q_out = []
+        for lab in BSD_DAYS:
+            dow = _weekday_index_from_bsd_label(lab)
+            qv = vol_wd.get(dow, global_ratio)
+            q_out.append(float(np.clip(qv, 0.02, 0.98)))
+
+    return q_out
+
+
+def _day_level_pla_pca_spend(
+    pla_budget: float,
+    pca_budget: float,
+    bu: str,
+    sc: str,
+    pla_f=None,
+    pca_f=None,
+) -> pd.DataFrame:
+    """
+    Split event budgets across 8 days: daily **total** follows BU×category phasing.
+
+    When history has aligned daily PLA+PCA, each day's PLA share uses Friday-aligned
+    8-day windows, robust medians, weekday/weekend blending, then calibration to
+    pla_budget / pca_budget. Otherwise PLA % is constant day to day.
+    """
     ph = get_phasing_for_bu_sc(bu, sc)
+    total_budget = pla_budget + pca_budget
+    if total_budget <= 0:
+        return pd.DataFrame()
+
+    pla_share = pla_budget / total_budget
+    q_raw = _pla_fraction_per_event_day_from_history(pla_f, pca_f)
+    use_varying = q_raw is not None and len(q_raw) == len(BSD_DAYS)
+
+    q_cal = None
+    if use_varying:
+        S = sum(ph[i] * q_raw[i] for i in range(len(BSD_DAYS)))
+        if S > 1e-12:
+            q_cal = [q_raw[i] * pla_share / S for i in range(len(BSD_DAYS))]
+
     rows = []
     for i, day in enumerate(BSD_DAYS):
-        pa = pla_budget * ph[i]
-        pc = pca_budget * ph[i]
+        if q_cal is not None:
+            T = total_budget * ph[i]
+            qi = min(1.0, max(0.0, q_cal[i]))
+            pa = T * qi
+            pc = T * (1.0 - qi)
+        else:
+            pa = pla_budget * ph[i]
+            pc = pca_budget * ph[i]
         tot = pa + pc
         rows.append({
             'Day': day,
@@ -1137,8 +1428,12 @@ def _main():
 
             st.divider()
             st.markdown("#### 1 · Day-level PLA vs PCA spend (₹)")
-            st.caption("Totals equal the event budget; PLA/PCA split follows historical mix; daily amounts follow the phasing curve.")
-            day_show = _day_level_pla_pca_spend(pla_budget, pca_budget, ph_bu, ph_sc)
+            st.caption(
+                "Daily **total** follows phasing. **PLA % vs PCA %** uses aligned daily history: Friday-start 8-day windows "
+                "(same shape as this event), medians with winsorization, May-weighted samples, then weekday & weekend "
+                "fallbacks when data is thin — all scaled so overall PLA/PCA rupees still match your split."
+            )
+            day_show = _day_level_pla_pca_spend(pla_budget, pca_budget, ph_bu, ph_sc, pla_f, pca_f)
             if not day_show.empty:
                 day_show = _dimensions_first_then_metrics(day_show)
                 cfg = _rupee_columns_config(day_show)
