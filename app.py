@@ -1098,7 +1098,15 @@ def _main():
         "from filtered history for bid reference; they do **not** allocate budget."
     )
 
-    total_budget = st.number_input("Total event budget (₹)", min_value=10000, max_value=10000000, value=100000, step=10000, key='opt_budget')
+    # Up to ₹1000 Cr; step ₹1L (type any value the widget allows)
+    total_budget = st.number_input(
+        "Total event budget (₹)",
+        min_value=10_000,
+        max_value=10_000_000_000,
+        value=100_000,
+        step=100_000,
+        key="opt_budget",
+    )
 
     pla_hist = pla_f['spend'].sum() if pla_f is not None and not pla_f.empty and 'spend' in pla_f.columns else 0
     pca_hist = pca_f['adspend'].sum() if pca_f is not None and not pca_f.empty and 'adspend' in pca_f.columns else 0
