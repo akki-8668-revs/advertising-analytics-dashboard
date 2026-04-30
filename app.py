@@ -661,7 +661,7 @@ def _super_category_sidebar_options(pla_df, pca_df):
 
 
 def _brand_options_for_bu(pla_df, pca_df, bu_col, sel_bu):
-    """Brands in scope: all rows if BU is All, else only rows matching selected BU (Power BI slicer behavior)."""
+    """Brands in scope: all rows if BU is All, else rows for the selected BU only."""
     raw = []
     for df in (pla_df, pca_df):
         if df is None or df.empty or 'brand' not in df.columns:
@@ -677,7 +677,7 @@ def _brand_options_for_bu(pla_df, pca_df, bu_col, sel_bu):
 
 
 def _super_category_options_for_bu(pla_df, pca_df, bu_col, sel_bu):
-    """Super categories scoped to selected BU when BU ≠ All (cross-filter like Power BI)."""
+    """Super categories scoped to the selected BU when BU is not All."""
     if sel_bu == 'All' or not bu_col:
         return _super_category_sidebar_options(pla_df, pca_df)
     raw = []
@@ -696,15 +696,18 @@ def _super_category_options_for_bu(pla_df, pca_df, bu_col, sel_bu):
     return ['All'] + sorted(set(x for x in raw if x))
 
 
-def _filter_options_by_search(options_with_all, query: str):
-    """Keep 'All' plus rows whose label contains query (case-insensitive)."""
-    if not query or not str(query).strip():
-        return options_with_all
-    q = str(query).strip().lower()
-    head = options_with_all[:1] if options_with_all and options_with_all[0] == 'All' else ['All']
-    rest = options_with_all[1:] if head == ['All'] else options_with_all
-    hit = [x for x in rest if q in str(x).lower()]
-    return head + hit
+def _rank_search_matches(candidates, query: str, max_show: int = 600):
+    """
+    Search ranking: prefix matches first, then substring matches; empty query returns sorted full list (capped).
+    """
+    items = sorted({str(x).strip() for x in candidates if x is not None and str(x).strip()})
+    q = (query or "").strip().lower()
+    if not q:
+        return items[:max_show]
+    pref = [x for x in items if x.lower().startswith(q)]
+    rest = [x for x in items if q in x.lower() and x not in pref]
+    out = pref + sorted(rest)
+    return out[:max_show]
 
 
 def _apply_sc_filter(df, sel_sc):
@@ -879,28 +882,61 @@ def _main():
     bu_col_opt = 'business_unit' if 'business_unit' in df_ref.columns else ('analytic_vertical' if 'analytic_vertical' in df_ref.columns else None)
 
     st.sidebar.subheader("Filters")
-    st.sidebar.caption("Pick **BU** first — Brand and Super Category lists narrow like Power BI.")
+    st.sidebar.caption("Select **BU** to scope brand and super category options.")
     sel_bu = st.sidebar.selectbox(
         "BU",
         ['All'] + sorted(df_ref[bu_col_opt].dropna().astype(str).unique().tolist()),
         key="sidebar_bu",
     ) if bu_col_opt and bu_col_opt in df_ref.columns else 'All'
 
-    brand_base = ['All'] + _brand_options_for_bu(pla_df, pca_df, bu_col_opt, sel_bu)
-    st.sidebar.text_input("Search brand", placeholder="Type to narrow list…", key="search_brand_q")
-    brand_q = str(st.session_state.get("search_brand_q", "") or "")
-    brand_opts = _filter_options_by_search(brand_base, brand_q)
-    if len(brand_opts) <= 1:
-        brand_opts = brand_base
-    sel_brand = st.sidebar.selectbox("Brand", brand_opts, key=f"sidebar_brand_{sel_bu}")
+    st.sidebar.markdown("**Brand**")
+    brand_q = st.sidebar.text_input(
+        "brand_search",
+        label_visibility="collapsed",
+        placeholder="Search brands",
+        key=f"brand_dyn_q_{sel_bu}",
+    )
+    brand_candidates = _brand_options_for_bu(pla_df, pca_df, bu_col_opt, sel_bu)
+    brand_matches = _rank_search_matches(brand_candidates, brand_q)
+    brand_opts = ["All"] + brand_matches
+    if str(brand_q or "").strip() and not brand_matches:
+        st.sidebar.caption("No matching brands. Clear the search or adjust the query.")
+        brand_opts = ["All"]
+    else:
+        n_br = len(brand_matches)
+        hint = f" (of {len(brand_candidates)} total)" if n_br < len(brand_candidates) else ""
+        st.sidebar.caption(f"{n_br} option(s){hint}.")
+    sel_brand = st.sidebar.selectbox(
+        "brand_pick",
+        brand_opts,
+        label_visibility="collapsed",
+        key=f"sidebar_brand_{sel_bu}",
+    )
 
-    sc_base = _super_category_options_for_bu(pla_df, pca_df, bu_col_opt, sel_bu)
-    st.sidebar.text_input("Search super category", placeholder="Type to narrow list…", key="search_sc_q")
-    sc_q = str(st.session_state.get("search_sc_q", "") or "")
-    sc_opts = _filter_options_by_search(sc_base, sc_q)
-    if len(sc_opts) <= 1:
-        sc_opts = sc_base
-    sel_sc = st.sidebar.selectbox("Super Category", sc_opts, key=f"sidebar_sc_{sel_bu}")
+    st.sidebar.markdown("**Super category**")
+    sc_q = st.sidebar.text_input(
+        "sc_search",
+        label_visibility="collapsed",
+        placeholder="Search super categories",
+        key=f"sc_dyn_q_{sel_bu}",
+    )
+    sc_candidates = _super_category_options_for_bu(pla_df, pca_df, bu_col_opt, sel_bu)
+    sc_candidates_no_all = [x for x in sc_candidates if x != "All"]
+    sc_matches = _rank_search_matches(sc_candidates_no_all, sc_q)
+    sc_opts = ["All"] + sc_matches
+    if str(sc_q or "").strip() and not sc_matches:
+        st.sidebar.caption("No matching categories. Clear the search or adjust the query.")
+        sc_opts = ["All"]
+    else:
+        n_sc = len(sc_matches)
+        hint = f" (of {len(sc_candidates_no_all)} total)" if n_sc < len(sc_candidates_no_all) else ""
+        st.sidebar.caption(f"{n_sc} option(s){hint}.")
+    sel_sc = st.sidebar.selectbox(
+        "sc_pick",
+        sc_opts,
+        label_visibility="collapsed",
+        key=f"sidebar_sc_{sel_bu}",
+    )
 
     def apply_filters(df):
         if df is None or df.empty:
@@ -921,8 +957,8 @@ def _main():
 
     st.markdown(f"### BSD day-level budget · {BSD_EVENT_LABEL}")
     st.caption(
-        "**Spend plan is only day × format (PLA vs PCA).** You do **not** set ₹ by slot/context or page type — "
-        "those rows show **CPC only** (historical effective CPC) so you can judge **whether** a bid can win that placement."
+        "Day-level spend is shown by format (PLA vs PCA). Slot, context, and page type appear below as **effective CPC** "
+        "from filtered history for bid reference; they do **not** allocate budget."
     )
 
     total_budget = st.number_input("Total event budget (₹)", min_value=10000, max_value=10000000, value=100000, step=10000, key='opt_budget')
@@ -947,16 +983,16 @@ def _main():
 
             k1, k2, k3 = st.columns(3)
             k1.metric("Event budget (₹)", f"{total_budget:,.0f}")
-            k2.metric("Blended hist. ROI (sanity check)", f"{hist_roi_blend:.2f}")
-            k3.metric("If ROI holds · revenue (₹)", f"{est_rev:,.0f}")
+            k2.metric("Blended historical ROI", f"{hist_roi_blend:.2f}")
+            k3.metric("Illustrative revenue at blended ROI (₹)", f"{est_rev:,.0f}")
             st.caption(
-                f"Phasing curve uses **BU `{ph_bu}` × category `{ph_sc}`** (event-level). "
-                "ROI × budget is illustrative — CPC tables below do **not** allocate spend."
+                f"Phasing uses **BU `{ph_bu}` × category `{ph_sc}`** at event level. "
+                "Revenue is illustrative from blended ROI; CPC tables do not allocate spend."
             )
 
             st.divider()
-            st.markdown("#### 1 · Day-level PLA vs PCA spend (only ₹ plan)")
-            st.caption("Totals match your event budget; split between PLA/PCA from historical mix, then across 8 days from phasing.")
+            st.markdown("#### 1 · Day-level PLA vs PCA spend (₹)")
+            st.caption("Totals equal the event budget; PLA/PCA split follows historical mix; daily amounts follow the phasing curve.")
             day_show = _day_level_pla_pca_spend(pla_budget, pca_budget, ph_bu, ph_sc)
             if not day_show.empty:
                 day_show = _dimensions_first_then_metrics(day_show)
@@ -968,10 +1004,10 @@ def _main():
 
             st.divider()
             st.markdown("#### 2 · PLA · CPC reference (slot × context)")
-            st.caption("Spend ÷ clicks in filtered history — **bid / serving only**, not a budget split.")
+            st.caption("Effective CPC (spend ÷ clicks) from filtered history. Reference for bids and delivery; not a budget allocation.")
             pla_sheet = _pla_cpc_guidance_table(pla_f)
             if pla_sheet.empty:
-                st.info("No PLA CPC breakdown (missing spend/clicks or placement columns).")
+                st.info("No PLA CPC data for this filter (required columns or volume missing).")
             else:
                 ps = _dimensions_first_then_metrics(pla_sheet.round(4))
                 cfg = _rupee_columns_config(ps)
@@ -981,10 +1017,10 @@ def _main():
                 st.dataframe(ps, **args)
 
             st.markdown("#### 3 · PCA · CPC reference (page type)")
-            st.caption("Same — **CPC only** for whether traffic can serve at that page type.")
+            st.caption("Effective CPC by page type from filtered history. Reference for bids and delivery; not a budget allocation.")
             pca_sheet = _pca_cpc_guidance_table(pca_f)
             if pca_sheet.empty:
-                st.info("No PCA CPC breakdown.")
+                st.info("No PCA CPC data for this filter.")
             else:
                 zs = _dimensions_first_then_metrics(pca_sheet.round(4))
                 cfg = _rupee_columns_config(zs)
