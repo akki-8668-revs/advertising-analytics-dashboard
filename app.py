@@ -647,15 +647,6 @@ def _canonical_map_most_frequent(values):
     return out
 
 
-def _collect_brand_values(pla_df, pca_df):
-    raw = []
-    for df in (pla_df, pca_df):
-        if df is None or df.empty or 'brand' not in df.columns:
-            continue
-        raw.extend(df['brand'].dropna().astype(str).str.strip().tolist())
-    return raw
-
-
 def _collect_super_category_values(pla_df, pca_df):
     raw = []
     if pla_df is not None and not pla_df.empty and 'analytic_super_category' in pla_df.columns:
@@ -680,11 +671,20 @@ def _map_dim_series(series, mmap):
     return series.astype(object).map(one)
 
 
-def _apply_brand_map(df, brand_map):
-    if df is None or df.empty or 'brand' not in df.columns or not brand_map:
+def _apply_brand_lowercase(df):
+    if df is None or df.empty or 'brand' not in df.columns:
         return df
     out = df.copy()
-    out['brand'] = _map_dim_series(out['brand'], brand_map)
+
+    def to_lower(x):
+        if pd.isna(x):
+            return x
+        t = str(x).strip()
+        if not t:
+            return x
+        return t.lower()
+
+    out['brand'] = out['brand'].astype(object).map(to_lower)
     return out
 
 
@@ -709,13 +709,12 @@ def _apply_col_map(df, col, mmap):
 
 def normalize_pla_pca_shared_labels(pla_df, pca_df):
     """
-    Align brand, super category, and BU spellings across PLA and PCA so filters and
-    aggregations do not treat Case, CASE, and case as different entities.
+    Lowercase all brands; align super category and BU spellings across PLA/PCA
+    (case-insensitive merge + one canonical spelling per group).
     """
-    bmap = _canonical_map_most_frequent(_collect_brand_values(pla_df, pca_df))
+    pla_df = _apply_brand_lowercase(pla_df)
+    pca_df = _apply_brand_lowercase(pca_df)
     smap = _canonical_map_most_frequent(_collect_super_category_values(pla_df, pca_df))
-    pla_df = _apply_brand_map(pla_df, bmap)
-    pca_df = _apply_brand_map(pca_df, bmap)
     pla_df = _apply_sc_maps(pla_df, smap)
     pca_df = _apply_sc_maps(pca_df, smap)
     for col in ('business_unit', 'analytic_vertical'):
@@ -888,9 +887,30 @@ def _day_level_pla_pca_spend(pla_budget: float, pca_budget: float, bu: str, sc: 
     return pd.DataFrame(rows)
 
 
+def _pla_rows_without_missing_slot_type(pla_f):
+    """Exclude rows with null, empty, or literal none/nan in slot_type (PLA CPC table)."""
+    if pla_f is None or pla_f.empty or 'slot_type' not in pla_f.columns:
+        return pla_f
+    s = pla_f['slot_type']
+
+    def bad_slot(v):
+        if pd.isna(v):
+            return True
+        t = str(v).strip()
+        if not t:
+            return True
+        return t.lower() in ('none', 'nan', 'null')
+
+    keep = ~s.map(bad_slot)
+    return pla_f.loc[keep].copy()
+
+
 def _pla_cpc_guidance_table(pla_f) -> pd.DataFrame:
     """Historical effective CPC by placement — bid / serving guidance only; does not assign ₹."""
     if pla_f is None or pla_f.empty or 'spend' not in pla_f.columns or 'clicks' not in pla_f.columns:
+        return pd.DataFrame()
+    pla_f = _pla_rows_without_missing_slot_type(pla_f)
+    if pla_f.empty:
         return pd.DataFrame()
     gcols = [c for c in ('brand', 'analytic_super_category', 'page_context', 'slot_type') if c in pla_f.columns]
     if not gcols:
